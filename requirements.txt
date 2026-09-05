@@ -1,0 +1,7 @@
+pandas
+numpy
+matplotlib
+groq
+reportlab
+python-dotenv
+streamlit

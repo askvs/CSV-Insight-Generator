@@ -1,0 +1,35 @@
+# Environment & Secrets
+.env
+.env.*
+
+# Virtual environment
+venv/
+.venv/
+env/
+
+# Python caches
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyo
+
+# Ruff / linter caches
+.ruff_cache/
+
+# IDE
+.vscode/
+.idea/
+
+# OS files
+Thumbs.db
+.DS_Store
+
+# Outputs
+outputs/
+
+# Pyrefly / Pyright
+pyrefly.toml
+pyrightconfig.json
+
+# Test / scratch files
+scratch_test.py

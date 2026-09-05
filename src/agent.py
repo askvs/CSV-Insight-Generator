@@ -1,0 +1,790 @@
+import json
+import os
+import re
+import sys
+import time
+
+from groq import Groq
+from groq.types.chat import ChatCompletion
+
+try:
+    from .prompts import SYSTEM_PROMPT, TOOLS
+    from .sandbox import execute_python
+except ImportError:
+    from prompts import SYSTEM_PROMPT, TOOLS
+    from sandbox import execute_python
+
+# Ensure console supports UTF-8 on Windows
+_reconfigure = getattr(sys.stdout, "reconfigure", None)
+if callable(_reconfigure):
+    try:
+        _reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+
+try:
+    from dotenv import load_dotenv
+
+    load_dotenv()
+except ImportError:
+    pass
+
+
+DEFAULT_MODELS = [
+    "qwen/qwen3.8-27b",
+    "openai/gpt-oss-120b",
+    "openai/gpt-oss-20b",
+]
+
+
+def _extract_tool_call_from_text(text: str) -> tuple[str | None, dict]:
+    """
+    Extracts function name and argument dict from raw/failed LLM generation text
+    such as `<tool_call><function=final_answer><parameter=text>...`.
+    """
+    if not text:
+        return None, {}
+
+    # Check for <function=NAME> and <parameter=PARAM>...</tool_call> or EOF
+    fn_match = re.search(r"<function=([a-zA-Z0-9_]+)>", text)
+    if fn_match:
+        fn_name = fn_match.group(1)
+        param_match = re.search(
+            r"<parameter=([a-zA-Z0-9_]+)>\s*([\s\S]*?)(?:</tool_call>|</function>|$)",
+            text,
+        )
+        if param_match:
+            p_name = param_match.group(1)
+            p_val = param_match.group(2).strip()
+            return fn_name, {p_name: p_val}
+        # If no explicit parameter tag, treat remaining text as parameter
+        after_fn = text[fn_match.end() :].strip()
+        after_fn = re.sub(r"</?tool_call>", "", after_fn).strip()
+        key = "text" if fn_name == "final_answer" else "code"
+        return fn_name, {key: after_fn}
+
+    # Check for JSON block within text
+    json_match = re.search(r'\{[\s\S]*"name"\s*:\s*"([a-zA-Z0-9_]+)"[\s\S]*\}', text)
+    if json_match:
+        try:
+            parsed = json.loads(json_match.group(0))
+            fn_name = parsed.get("name")
+            args = parsed.get("arguments", parsed.get("parameters", {}))
+            if isinstance(args, str):
+                args = json.loads(args)
+            return fn_name, args
+        except Exception:
+            pass
+
+    return None, {}
+
+
+def _extract_code_from_raw_args(raw_args: str) -> str:
+    """Extracts python code from raw arguments even if JSON decoding fails or is truncated."""
+    if not raw_args or not isinstance(raw_args, str):
+        return ""
+    raw = raw_args.strip()
+    try:
+        parsed = json.loads(raw)
+        if isinstance(parsed, dict):
+            c = parsed.get("code") or parsed.get("python") or ""
+            if c:
+                return c
+        elif isinstance(parsed, str):
+            return parsed
+    except Exception:
+        pass
+
+    # Markdown fenced block
+    md_match = re.search(r"```(?:python)?\s*([\s\S]*?)\s*```", raw)
+    if md_match:
+        return md_match.group(1).strip()
+
+    # JSON-like "code": "..."
+    code_match = re.search(r'"code"\s*:\s*"([\s\S]*)$', raw)
+    if code_match:
+        val = code_match.group(1)
+        val = re.sub(r'"\s*\}?\s*$', "", val)
+        try:
+            val = json.loads(f'"{val}"')
+        except Exception:
+            val = (
+                val.replace("\\n", "\n")
+                .replace('\\"', '"')
+                .replace("\\t", "\t")
+                .replace("\\\\", "\\")
+            )
+        return val.strip()
+
+    return raw
+
+
+def _clean_final_text(text: str | None) -> str:
+    """Strips <think> tags or raw tool XML artifacts if present in LLM outputs."""
+    if not text:
+        return ""
+    cleaned = re.sub(r"<think>[\s\S]*?</think>", "", text).strip()
+    if "<function=final_answer>" in cleaned:
+        match = re.search(r"<parameter=[^>]+>\s*([\s\S]*?)(?:</tool_call>|</function>|$)", cleaned)
+        if match and match.group(1).strip():
+            cleaned = match.group(1).strip()
+    # Strip any remaining tool tags if present
+    cleaned = re.sub(r"</?(?:tool_call|function(?:=[^>]+)?|parameter(?:=[^>]+)?)>", "", cleaned).strip()
+    return cleaned
+
+
+def _is_valid_executive_report(text: str | None) -> bool:
+    """Validates that a generated response is an actual answer/report rather than intermediate chatter or raw code."""
+    if not text or not text.strip():
+        return False
+    t = text.strip()
+    if t.startswith("import ") or "<tool_call>" in t or "<function=" in t:
+        return False
+    if t.startswith("```python") and t.endswith("```") and len(t.splitlines()) < 8:
+        return False
+    lower = t.lower()
+    intermediate_cues = [
+        "let me execute",
+        "i need to run",
+        "let me run",
+        "i will run",
+        "let's execute",
+        "executing python",
+        "running analysis",
+        "let me analyze",
+        "i will execute",
+        "let me write",
+        "let me compute",
+        "i need to analyze",
+        "i will calculate",
+        "let's check the",
+    ]
+    if any(cue in lower for cue in intermediate_cues) and len(t.split()) < 40:
+        return False
+    if len(t.split()) < 4:
+        return False
+    return True
+
+
+def _prune_past_history(history: list) -> list:
+    """
+    Prunes verbose raw tool outputs and intermediate execution logs from completed
+    earlier turns to prevent TPM/rate-limit exhaustion, while preserving the system
+    dataset profile and high-level conversational context.
+    """
+    if not history:
+        return []
+
+    system_msg = history[0]
+    pruned = [system_msg]
+
+    prev_messages = history[1:]
+    for msg in prev_messages:
+        role = msg.get("role")
+        if role == "user":
+            content = str(msg.get("content", ""))
+            # Exclude intermediate tool execution feedback prompts from previous turns
+            if not content.startswith("Tool execution result:") and not content.startswith("Result:"):
+                pruned.append({"role": "user", "content": content})
+        elif role == "assistant":
+            # Keep final responses, ignore intermediate code execution snippets
+            content = msg.get("content")
+            if content and not content.startswith("```python"):
+                pruned.append({"role": "assistant", "content": _clean_final_text(str(content))})
+
+    # Keep at most system prompt + last 3 Q&A pairs (6 messages)
+    if len(pruned) > 7:
+        pruned = [pruned[0]] + pruned[-6:]
+
+    return pruned
+
+
+class CSVInsightAgent:
+    """Agent that uses Groq LLM with tool-calling to analyze CSV data."""
+
+    def __init__(self, model_name: str = "qwen/qwen3.8-27b"):
+        api_key = os.getenv("GROQ_API_KEY")
+        # Fallback: read from Streamlit secrets (for Streamlit Cloud deployment)
+        if not api_key:
+            try:
+                import streamlit as st
+                api_key = st.secrets.get("GROQ_API_KEY")
+            except Exception:
+                pass
+        if not api_key:
+            raise ValueError("GROQ_API_KEY not found in environment, .env file, or Streamlit secrets.")
+
+        self.client = Groq(api_key=api_key)
+        self.model_name = model_name
+
+    def run_turn(
+        self,
+        user_question: str,
+        profile_dict: dict,
+        namespace: dict,
+        history: list | None = None,
+        max_turns: int = 4,
+        status_callback: object = None,
+    ) -> dict:
+        """
+        Run one agent turn for a user question.
+
+        Parameters:
+          user_question — user prompt or automated instruction
+          profile_dict  — dataset profile generated by profiler.py
+          namespace     — persistent session namespace containing `df`
+          history       — list of previous messages in session
+          max_turns     — limit on tool execution loops to avoid infinite loops
+
+        Returns dict:
+          {
+            "answer": str,           # Plain-English answer from final_answer tool
+            "charts": list[bytes],   # List of matplotlib PNG bytes produced during turn
+            "history": list,         # Updated conversation history
+            "executed_code": list,   # Code snippets executed during turn
+          }
+        """
+        if history is None:
+            history = []
+
+        # Build initial system message or prune past turns
+        if not history:
+            profile_str = json.dumps(profile_dict, separators=(",", ":"), default=str)
+            initial_system_content = f"{SYSTEM_PROMPT}\n\nHere is the factual profile of the loaded DataFrame 'df':\n```json\n{profile_str}\n```"
+            history = [{"role": "system", "content": initial_system_content}]
+        else:
+            history = _prune_past_history(history)
+
+        # Append user question to history
+        history.append({"role": "user", "content": user_question})
+
+        charts = []
+        executed_code = []
+        final_text = None
+
+        turn_count = 0
+        while turn_count < max_turns:
+            turn_count += 1
+
+            response = None
+            candidate_models = [self.model_name] + [
+                m for m in DEFAULT_MODELS if m != self.model_name
+            ]
+            last_err = None
+
+            # Always use "auto" to prevent Groq 400 Bad Request on named function forcing
+            current_tool_choice = "auto"
+
+            for cand_model in candidate_models:
+                try:
+                    if status_callback and callable(status_callback):
+                        try:
+                            phase = "synthesis" if executed_code else "planning"
+                            is_retry = (cand_model != candidate_models[0])
+                            status_callback(
+                                "model_calling",
+                                {
+                                    "step": turn_count,
+                                    "model": cand_model,
+                                    "phase": phase,
+                                    "is_retry": is_retry,
+                                },
+                            )
+                        except Exception:
+                            pass
+
+                    call_kwargs = {}
+                    if "qwen" in cand_model.lower():
+                        call_kwargs["reasoning_effort"] = "none"
+                        call_kwargs["max_tokens"] = 4096
+                    else:
+                        call_kwargs["max_tokens"] = 4096
+
+                    response = self.client.chat.completions.create(
+                        model=cand_model,
+                        messages=history,
+                        tools=TOOLS,
+                        tool_choice=current_tool_choice,
+                        temperature=0.2,
+                        stream=False,
+                        **call_kwargs,
+                    )
+                    self.model_name = cand_model
+                    break
+                except Exception as e:
+                    last_err = e
+                    err_str = str(e)
+
+                    # Check if error contains failed_generation that can be recovered
+                    failed_gen = None
+                    if hasattr(e, "body") and isinstance(e.body, dict):
+                        failed_gen = e.body.get("error", {}).get("failed_generation")
+                    if not failed_gen:
+                        match = re.search(
+                            r"'failed_generation':\s*['\"]([\s\S]*?)['\"]\s*\}", err_str
+                        )
+                        if match:
+                            failed_gen = match.group(1)
+
+                    if failed_gen:
+                        extracted_fn, extracted_args = _extract_tool_call_from_text(
+                            failed_gen
+                        )
+                        if extracted_fn == "final_answer":
+                            candidate_ans = _clean_final_text(extracted_args.get("text", failed_gen))
+                            if _is_valid_executive_report(candidate_ans):
+                                final_text = candidate_ans
+                                break
+                        elif extracted_fn == "execute_python":
+                            code = extracted_args.get("code", "")
+                            if code:
+                                executed_code.append(code)
+                                if status_callback and callable(status_callback):
+                                    try:
+                                        status_callback("code_generated", {"step": turn_count, "code": code})
+                                        status_callback("code_executing", {"step": turn_count, "code": code})
+                                    except Exception:
+                                        pass
+                                exec_result = execute_python(code, namespace)
+                                if exec_result.get("chart_png"):
+                                    charts.append(exec_result["chart_png"])
+                                if status_callback and callable(status_callback):
+                                    try:
+                                        status_callback(
+                                            "code_executed",
+                                            {
+                                                "step": turn_count,
+                                                "stdout": exec_result.get("stdout"),
+                                                "has_chart": bool(exec_result.get("chart_png")),
+                                                "success": exec_result.get("success"),
+                                                "error": exec_result.get("error"),
+                                            },
+                                        )
+                                    except Exception:
+                                        pass
+
+                                history.append(
+                                    {
+                                        "role": "assistant",
+                                        "content": f"```python\n{code}\n```",
+                                    }
+                                )
+                                stdout_str = (
+                                    exec_result["stdout"]
+                                    or "Code executed successfully."
+                                )
+                                chart_msg = (
+                                    "\n(Note: Chart was successfully generated and captured.)"
+                                    if exec_result.get("chart_png")
+                                    else ""
+                                )
+                                history.append(
+                                    {
+                                        "role": "user",
+                                        "content": f"Tool execution result:\n{stdout_str}{chart_msg}\nNow deliver your complete 5-section executive report.",
+                                    }
+                                )
+                                response = None
+                                break
+
+                    # If model parse failed but we already have executed code, synthesize directly
+                    if (
+                        "output_parse_failed" in err_str or "tool_use_failed" in err_str
+                    ) and executed_code:
+                        try:
+                            synth_kwargs = {}
+                            if "qwen" in cand_model.lower():
+                                synth_kwargs["reasoning_effort"] = "none"
+                                synth_kwargs["max_tokens"] = 4096
+                            else:
+                                synth_kwargs["max_tokens"] = 4096
+                            synthesis = self.client.chat.completions.create(
+                                model=cand_model,
+                                messages=history
+                                + [
+                                    {
+                                        "role": "user",
+                                        "content": "Please synthesize all the computed results into the complete 5-section executive markdown report now.",
+                                    }
+                                ],
+                                temperature=0.2,
+                                stream=False,
+                                **synth_kwargs,
+                            )
+                            if (
+                                isinstance(synthesis, ChatCompletion)
+                                and synthesis.choices
+                                and synthesis.choices[0].message.content
+                            ):
+                                candidate_ans = _clean_final_text(
+                                    synthesis.choices[0].message.content
+                                )
+                                if _is_valid_executive_report(candidate_ans):
+                                    final_text = candidate_ans
+                                    break
+                        except Exception:
+                            pass
+
+                    if (
+                        "429" in err_str
+                        or "rate_limit" in err_str.lower()
+                        or "400" in err_str
+                    ):
+                        time.sleep(0.5)
+                        continue
+
+            if final_text and _is_valid_executive_report(final_text):
+                break
+
+            if not isinstance(response, ChatCompletion) or not response.choices:
+                if last_err is not None and not final_text and executed_code:
+                    # Fallback direct generation without tools
+                    try:
+                        fallback_kwargs = {}
+                        if "qwen" in self.model_name.lower():
+                            fallback_kwargs["reasoning_effort"] = "none"
+                            fallback_kwargs["max_tokens"] = 4096
+                        else:
+                            fallback_kwargs["max_tokens"] = 4096
+                        fallback_resp = self.client.chat.completions.create(
+                            model=self.model_name,
+                            messages=history
+                            + [
+                                {
+                                    "role": "user",
+                                    "content": "Deliver the complete 5-section executive report based on the data findings now.",
+                                }
+                            ],
+                            temperature=0.2,
+                            stream=False,
+                            **fallback_kwargs,
+                        )
+                        if (
+                            isinstance(fallback_resp, ChatCompletion)
+                            and fallback_resp.choices
+                            and fallback_resp.choices[0].message.content
+                        ):
+                            candidate_ans = _clean_final_text(
+                                fallback_resp.choices[0].message.content
+                            )
+                            if _is_valid_executive_report(candidate_ans):
+                                final_text = candidate_ans
+                                break
+                    except Exception:
+                        pass
+                if not isinstance(response, ChatCompletion) or not response.choices:
+                    continue
+
+            response_message = response.choices[0].message
+            tool_calls = response_message.tool_calls
+
+            # Convert message to dict format for history
+            msg_dict: dict[str, object] = {"role": "assistant"}
+            if response_message.content:
+                msg_dict["content"] = response_message.content
+            if tool_calls:
+                msg_dict["tool_calls"] = [
+                    {
+                        "id": tc.id,
+                        "type": tc.type,
+                        "function": {
+                            "name": tc.function.name,
+                            "arguments": tc.function.arguments,
+                        },
+                    }
+                    for tc in tool_calls
+                ]
+
+            history.append(msg_dict)
+
+            # If LLM didn't call any tools, check if text content is available as the final answer
+            if not tool_calls:
+                if response_message.content and response_message.content.strip():
+                    content_str = response_message.content.strip()
+                    # Check if model outputted XML tool call in content
+                    if "<tool_call>" in content_str or "<function=" in content_str:
+                        extracted_fn, extracted_args = _extract_tool_call_from_text(
+                            content_str
+                        )
+                        if extracted_fn == "final_answer":
+                            raw_answer = extracted_args.get("text", content_str)
+                            candidate_ans = _clean_final_text(str(raw_answer) if raw_answer else content_str)
+                            if _is_valid_executive_report(candidate_ans):
+                                final_text = candidate_ans
+                                break
+                        elif extracted_fn == "execute_python":
+                            code = extracted_args.get("code", "")
+                            if code:
+                                executed_code.append(code)
+                                if status_callback and callable(status_callback):
+                                    try:
+                                        status_callback("code_generated", {"step": turn_count, "code": code})
+                                        status_callback("code_executing", {"step": turn_count, "code": code})
+                                    except Exception:
+                                        pass
+                                exec_result = execute_python(code, namespace)
+                                if exec_result.get("chart_png"):
+                                    charts.append(exec_result["chart_png"])
+                                if status_callback and callable(status_callback):
+                                    try:
+                                        status_callback(
+                                            "code_executed",
+                                            {
+                                                "step": turn_count,
+                                                "stdout": exec_result.get("stdout"),
+                                                "has_chart": bool(exec_result.get("chart_png")),
+                                                "success": exec_result.get("success"),
+                                                "error": exec_result.get("error"),
+                                            },
+                                        )
+                                    except Exception:
+                                        pass
+                                stdout_str = (
+                                    exec_result["stdout"] or "Executed successfully."
+                                )
+                                history.append(
+                                    {
+                                        "role": "user",
+                                        "content": f"Result:\n{stdout_str}\nPlease finalize your complete 5-section executive report now.",
+                                    }
+                                )
+                                continue
+
+                    cleaned = _clean_final_text(content_str)
+                    if _is_valid_executive_report(cleaned):
+                        final_text = cleaned
+                        break
+                    else:
+                        # LLM outputted conversational chatter/promise instead of report
+                        history.append(
+                            {
+                                "role": "user",
+                                "content": "Please synthesize the computed results and deliver your complete 5-section executive report now. Do not output conversational promises.",
+                            }
+                        )
+                        continue
+                else:
+                    # Prompt the LLM to synthesize the final answer
+                    history.append(
+                        {
+                            "role": "user",
+                            "content": "Please synthesize all your findings and deliver the comprehensive 5-section executive report now.",
+                        }
+                    )
+                    continue
+
+            # Handle Tool Calls
+            tool_finished = False
+            for tool_call in tool_calls:
+                func_name = tool_call.function.name
+                raw_args = tool_call.function.arguments or ""
+
+                try:
+                    arguments = json.loads(raw_args)
+                    if isinstance(arguments, str):
+                        arguments = {"text": arguments, "code": arguments}
+                except Exception:
+                    # Robust fallback parsing if JSON decode fails
+                    extracted_code = _extract_code_from_raw_args(raw_args)
+                    arguments = {"text": raw_args, "code": extracted_code}
+
+                if func_name == "final_answer":
+                    answer_text = (
+                        arguments.get("text") or arguments.get("answer") or raw_args
+                    )
+                    candidate_ans = _clean_final_text(str(answer_text))
+                    if _is_valid_executive_report(candidate_ans):
+                        final_text = candidate_ans
+                        tool_finished = True
+                        history.append(
+                            {
+                                "role": "tool",
+                                "tool_call_id": tool_call.id,
+                                "content": "Final answer recorded successfully.",
+                            }
+                        )
+                        break
+                    else:
+                        history.append(
+                            {
+                                "role": "tool",
+                                "tool_call_id": tool_call.id,
+                                "content": "The answer provided is too brief or incomplete. Please deliver the full 5-section executive report with empirical findings.",
+                            }
+                        )
+                        continue
+
+                elif func_name == "execute_python":
+                    code = arguments.get("code") or arguments.get("python") or raw_args
+                    executed_code.append(code)
+
+                    if status_callback and callable(status_callback):
+                        try:
+                            status_callback("code_generated", {"step": turn_count, "code": code})
+                            status_callback("code_executing", {"step": turn_count, "code": code})
+                        except Exception:
+                            pass
+
+                    # Execute in sandbox
+                    exec_result = execute_python(code, namespace)
+
+                    # Store chart if created
+                    if exec_result.get("chart_png"):
+                        charts.append(exec_result["chart_png"])
+
+                    if status_callback and callable(status_callback):
+                        try:
+                            status_callback(
+                                "code_executed",
+                                {
+                                    "step": turn_count,
+                                    "stdout": exec_result.get("stdout"),
+                                    "has_chart": bool(exec_result.get("chart_png")),
+                                    "success": exec_result.get("success"),
+                                    "error": exec_result.get("error"),
+                                },
+                            )
+                        except Exception:
+                            pass
+
+                    # Format output for LLM
+                    if exec_result["success"]:
+                        stdout_str = (
+                            exec_result["stdout"]
+                            or "Code executed successfully with no print output."
+                        )
+                        chart_msg = (
+                            "\n(Note: A matplotlib chart was successfully generated and captured.)"
+                            if exec_result.get("chart_png")
+                            else ""
+                        )
+                        tool_output_content = (
+                            f"EXECUTION SUCCESSFUL:\n{stdout_str}{chart_msg}\n\n"
+                            "All required data and visualizations have been successfully computed. "
+                            "Call 'final_answer' now to deliver your complete 5-section executive report."
+                        )
+                    else:
+                        tool_output_content = f"EXECUTION FAILED:\n{exec_result['error']}\nPlease analyze the error and fix your code."
+
+                    # Append tool response to message history
+                    history.append(
+                        {
+                            "role": "tool",
+                            "tool_call_id": tool_call.id,
+                            "content": tool_output_content,
+                        }
+                    )
+
+            if tool_finished and final_text and _is_valid_executive_report(final_text):
+                break
+
+        # If the turn loop completed without producing a valid executive report, perform an explicit synthesis call
+        if not _is_valid_executive_report(final_text):
+            if status_callback and callable(status_callback):
+                try:
+                    status_callback(
+                        "synthesis_start",
+                        {"step": turn_count, "code_count": len(executed_code)},
+                    )
+                except Exception:
+                    pass
+
+            candidate_models = [self.model_name] + [
+                m for m in DEFAULT_MODELS if m != self.model_name
+            ]
+            for cand_model in candidate_models:
+                try:
+                    synth_kwargs = {}
+                    if "qwen" in cand_model.lower():
+                        synth_kwargs["reasoning_effort"] = "none"
+                        synth_kwargs["max_tokens"] = 4096
+                    else:
+                        synth_kwargs["max_tokens"] = 4096
+                    synthesis_resp = self.client.chat.completions.create(
+                        model=cand_model,
+                        messages=history
+                        + [
+                            {
+                                "role": "user",
+                                "content": (
+                                    "Based on all previous data analysis, executed Python code outputs, and generated charts, "
+                                    "provide a thorough plain-English explanation and direct answer to the user's question in clear markdown. "
+                                    "Explain the numerical findings and what the visualization shows in detail. "
+                                    "Do NOT output python code, XML tool tags, or conversational promises; output your complete answer and explanation now."
+                                ),
+                            }
+                        ],
+                        temperature=0.2,
+                        stream=False,
+                        **synth_kwargs,
+                    )
+                    if (
+                        isinstance(synthesis_resp, ChatCompletion)
+                        and synthesis_resp.choices
+                    ):
+                        content = synthesis_resp.choices[0].message.content
+                        if content and content.strip():
+                            cleaned = _clean_final_text(content)
+                            if _is_valid_executive_report(cleaned):
+                                final_text = cleaned
+                                self.model_name = cand_model
+                                break
+                except Exception:
+                    continue
+
+        # Guarantee visual intelligence is never empty if df is present in namespace
+        if not charts and namespace and isinstance(namespace.get("df"), object):
+            try:
+                from src.reporter import _generate_fallback_chart
+
+                # pyrefly: ignore [bad-argument-type]
+                fallback_chart = _generate_fallback_chart(namespace.get("df"))
+                if fallback_chart:
+                    charts.append(fallback_chart)
+            except Exception:
+                pass
+
+        if not final_text or not final_text.strip():
+            recent_tool_msgs = [
+                str(msg.get("content", ""))
+                for msg in history
+                if msg.get("role") == "tool" and msg.get("content")
+            ]
+            if recent_tool_msgs:
+                clean_tool_output = re.sub(
+                    r"EXECUTION SUCCESSFUL:\s*", "", recent_tool_msgs[-1]
+                ).strip()
+                clean_tool_output = re.sub(
+                    r"\(Note:.*?\)", "", clean_tool_output
+                ).strip()
+                clean_tool_output = re.sub(
+                    r"All required data and visualizations.*", "", clean_tool_output
+                ).strip()
+                if clean_tool_output:
+                    final_text = f"### Summary of Findings\n\n{clean_tool_output}\n\n*Review the visual intelligence breakdown above for the plotted data.*"
+                elif charts:
+                    final_text = "Analysis completed with computed findings and visualizations. Review the visual breakdown above."
+                else:
+                    final_text = "Analysis completed. Review the executed Python code steps above for details."
+            elif charts:
+                final_text = "Analysis completed with computed findings and visualizations. Review the visual breakdown above."
+            else:
+                final_text = "Analysis completed. Review the executed Python code steps above for details."
+
+        final_text = _clean_final_text(final_text)
+
+        if status_callback and callable(status_callback):
+            try:
+                status_callback(
+                    "completed",
+                    {"has_answer": bool(final_text), "charts_count": len(charts)},
+                )
+            except Exception:
+                pass
+
+        return {
+            "answer": final_text,
+            "charts": charts,
+            "history": history,
+            "executed_code": executed_code,
+        }
