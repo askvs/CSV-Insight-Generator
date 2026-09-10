@@ -1,3 +1,4 @@
+import hashlib
 import html
 import io
 import os
@@ -952,11 +953,39 @@ def generate_pdf_report(
             story.append(_safe_paragraph(content, body_style, raw_fallback=content))
 
     # 5. VISUAL ANALYTICS SECTION (Never Empty)
-    effective_charts: list[bytes] = charts if (charts and len(charts) > 0) else []
+    raw_charts = charts if (charts and len(charts) > 0) else []
+    effective_charts: list[tuple[bytes, str]] = []
+    seen_hashes: set[str] = set()
+
+    for c in raw_charts:
+        png_b: bytes | None = None
+        title: str = ""
+
+        if isinstance(c, bytes):
+            png_b = c
+        elif hasattr(c, "_png_bytes") and getattr(c, "_png_bytes"):
+            png_b = getattr(c, "_png_bytes")
+            if hasattr(c, "layout") and hasattr(c.layout, "title") and c.layout.title and getattr(c.layout.title, "text", None):
+                title = str(c.layout.title.text).strip()
+        elif hasattr(c, "to_image"):
+            if hasattr(c, "layout") and hasattr(c.layout, "title") and c.layout.title and getattr(c.layout.title, "text", None):
+                title = str(c.layout.title.text).strip()
+            try:
+                png_b = c.to_image(format="png", width=900, height=450)
+            except Exception:
+                pass
+
+        if png_b:
+            h = hashlib.md5(png_b).hexdigest()
+            if h not in seen_hashes:
+                seen_hashes.add(h)
+                effective_charts.append((png_b, title))
+
+    # If no charts were generated across all steps, generate one fallback empirical chart
     if not effective_charts and df is not None:
         fallback = _generate_fallback_chart(df)
         if fallback:
-            effective_charts.append(fallback)
+            effective_charts.append((fallback, "Empirical Exploratory Distribution"))
 
     if effective_charts:
         story.append(Spacer(1, 8))
@@ -967,18 +996,18 @@ def generate_pdf_report(
             )
         )
 
-        for i, chart_bytes in enumerate(effective_charts, 1):
+        for i, (chart_bytes, title) in enumerate(effective_charts, 1):
             chart_img_buf = io.BytesIO(chart_bytes)
             chart_rl = RLImage(chart_img_buf, width=490, height=230)
 
+            caption_label = (
+                f"<b>Figure {i}:</b> {_clean_inline(title)}"
+                if title
+                else f"<b>Figure {i}:</b> Visual Breakdown Generated via Live Python Sandbox Execution"
+            )
             chart_box = [
                 [chart_rl],
-                [
-                    _safe_paragraph(
-                        f"<b>Figure {i}:</b> Visual Breakdown Generated via Live Python Sandbox Execution",
-                        subtitle_style,
-                    )
-                ],
+                [_safe_paragraph(caption_label, subtitle_style, raw_fallback=caption_label)],
             ]
             chart_table = Table(chart_box, colWidths=[532])
             chart_table.setStyle(

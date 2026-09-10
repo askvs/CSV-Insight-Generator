@@ -31,7 +31,14 @@ except ImportError:
 import streamlit as st
 
 from src.agent import CSVInsightAgent
-from src.profiler import load_csv, profile_dataframe
+from src.notebook import generate_jupyter_notebook
+from src.profiler import (
+    load_csv,
+    load_dataset,
+    load_multiple_files,
+    profile_dataframe,
+    profile_datasets,
+)
 from src.reporter import generate_pdf_report
 from src.sandbox import create_namespace
 
@@ -186,6 +193,8 @@ def init_session():
     """Initialize all session state keys if they don't exist."""
     defaults = {
         "df": None,
+        "dfs": {},
+        "dataset_names": [],
         "profile": None,
         "namespace": None,
         "agent": None,
@@ -193,7 +202,7 @@ def init_session():
         "chat_log": [],  # list of {"role": "user"|"agent", "content": str, "charts": [], "code": []}
         "dataset_name": None,
         "is_truncated": False,
-        "uploaded_file_id": None,
+        "uploaded_files_id": None,
     }
     for key, val in defaults.items():
         if key not in st.session_state:
@@ -202,61 +211,93 @@ def init_session():
 
 init_session()
 
-
-# ──────────────────────────────────────────────
-# Sidebar — File Upload & Dataset Controls
-# ──────────────────────────────────────────────
+# Self-healing: cleanse any stale profile dictionary held in browser session memory
+if st.session_state.get("profile"):
+    try:
+        json.dumps(st.session_state.profile, default=str)
+    except Exception:
+        if isinstance(st.session_state.profile, dict):
+            st.session_state.profile = {
+                k: v for k, v in st.session_state.profile.items() if k != "datasets"
+            }
+        st.session_state.history = None
 with st.sidebar:
-    st.markdown("## 📂 Upload Dataset")
-    uploaded_file = st.file_uploader(
-        "Drop a CSV file here",
-        type=["csv"],
-        help="Upload any CSV dataset. The agent will profile it and answer your questions.",
+    st.markdown("## 📂 Upload Datasets")
+    uploaded_files = st.file_uploader(
+        "Drop datasets here (CSV, Excel, Parquet, JSON)",
+        type=["csv", "xlsx", "xls", "parquet", "json"],
+        accept_multiple_files=True,
+        help="Upload one or more datasets in CSV, Excel (.xlsx/.xls), Parquet, or JSON format.",
     )
 
     # Detect new upload → reset session
-    if uploaded_file is not None:
-        file_id = f"{uploaded_file.name}_{uploaded_file.size}"
-        if file_id != st.session_state.uploaded_file_id:
-            # New file — reset everything
-            st.session_state.uploaded_file_id = file_id
+    if uploaded_files:
+        files_id = "_".join(sorted([f"{f.name}_{getattr(f, 'size', 0)}" for f in uploaded_files]))
+        if files_id != st.session_state.uploaded_files_id:
+            st.session_state.uploaded_files_id = files_id
             st.session_state.chat_log = []
             st.session_state.history = None
+            st.session_state.pop("generated_pdf", None)
+            st.session_state.pop("generated_pdf_name", None)
 
-            with st.spinner("Loading & profiling dataset…"):
+            with st.spinner("Loading & profiling dataset(s)…"):
                 try:
-                    df, is_truncated = load_csv(io.BytesIO(uploaded_file.getvalue()))
-                    profile = profile_dataframe(df, is_truncated)
-                    namespace = create_namespace(df)
+                    loaded_dict = load_multiple_files(uploaded_files)
+                    dfs = {name: pair[0] for name, pair in loaded_dict.items()}
+                    truncations = {name: pair[1] for name, pair in loaded_dict.items()}
+
+                    profile = profile_datasets(dfs, truncations)
+                    namespace = create_namespace(dfs)
                     agent = CSVInsightAgent()
 
-                    st.session_state.df = df
+                    st.session_state.dfs = dfs
+                    st.session_state.df = next(iter(dfs.values())) if dfs else None
+                    st.session_state.dataset_names = list(dfs.keys())
+                    st.session_state.dataset_name = (
+                        ", ".join(dfs.keys()) if len(dfs) > 1 else (next(iter(dfs.keys())) if dfs else "dataset")
+                    )
                     st.session_state.profile = profile
                     st.session_state.namespace = namespace
                     st.session_state.agent = agent
-                    st.session_state.dataset_name = uploaded_file.name
-                    st.session_state.is_truncated = is_truncated
+                    st.session_state.is_truncated = any(truncations.values())
                 except Exception as e:
-                    st.error(f"❌ Failed to load CSV: {e}")
+                    st.error(f"❌ Failed to load datasets: {e}")
                     st.session_state.df = None
+                    st.session_state.dfs = {}
 
     # Show dataset info in sidebar
-    if st.session_state.df is not None:
-        df = st.session_state.df
+    if st.session_state.dfs:
+        dfs = st.session_state.dfs
         st.markdown("---")
-        st.markdown(f"**📄 {st.session_state.dataset_name}**")
-        st.markdown(f"**Rows:** {len(df):,}")
-        st.markdown(f"**Columns:** {len(df.columns)}")
-        mem_mb = round(df.memory_usage(deep=True).sum() / 1_048_576, 2)
-        st.markdown(f"**Memory:** {mem_mb} MB")
+        if len(dfs) == 1:
+            d_name, single_df = next(iter(dfs.items()))
+            st.markdown(f"**📄 {d_name}**")
+            st.markdown(f"**Rows:** {len(single_df):,}")
+            st.markdown(f"**Columns:** {len(single_df.columns)}")
+            mem_mb = round(single_df.memory_usage(deep=True).sum() / 1_048_576, 2)
+            st.markdown(f"**Memory:** {mem_mb} MB")
+        else:
+            total_rows = sum(len(d) for d in dfs.values())
+            total_cols = sum(len(d.columns) for d in dfs.values())
+            total_mem = round(sum(d.memory_usage(deep=True).sum() for d in dfs.values()) / 1_048_576, 2)
+            st.markdown(f"**📚 {len(dfs)} Datasets Loaded**")
+            st.markdown(f"**Total Records:** {total_rows:,}")
+            st.markdown(f"**Total Features:** {total_cols}")
+            st.markdown(f"**Total Memory:** {total_mem} MB")
+            with st.expander("📑 View Table Inventory", expanded=False):
+                for name, d in dfs.items():
+                    st.caption(f"• **{name}**: {len(d):,} rows × {len(d.columns)} cols")
+
         if st.session_state.is_truncated:
-            st.warning("⚠️ Large file — sampled for profiling.")
+            st.warning("⚠️ Large file(s) — sampled for profiling.")
         st.markdown("---")
 
         # Reset session button
         if st.button("🔄 Reset Session", width="stretch"):
             for key in [
                 "df",
+                "dfs",
+                "dataset_names",
                 "profile",
                 "namespace",
                 "agent",
@@ -264,7 +305,9 @@ with st.sidebar:
                 "chat_log",
                 "dataset_name",
                 "is_truncated",
-                "uploaded_file_id",
+                "uploaded_files_id",
+                "generated_pdf",
+                "generated_pdf_name",
             ]:
                 st.session_state[key] = None if key != "chat_log" else []
             st.rerun()
@@ -276,8 +319,8 @@ with st.sidebar:
 st.markdown(
     """
 <div class="app-header">
-    <h1>📊 CSV Insight Agent</h1>
-    <p>Upload a dataset, ask any question — the AI agent writes & runs real Python code to find answers.</p>
+    <h1>📊 CSV & Multi-Dataset Insight Agent</h1>
+    <p>Drop CSV, Excel, Parquet, or JSON datasets — the AI agent writes Python, executes code, generates interactive Plotly charts, and uncovers cross-table intelligence.</p>
 </div>
 """,
     unsafe_allow_html=True,
@@ -287,36 +330,83 @@ st.markdown(
 # ──────────────────────────────────────────────
 # Main Area
 # ──────────────────────────────────────────────
-if st.session_state.df is None:
+if not st.session_state.dfs:
     # Landing state — no dataset yet
     st.markdown("### 👋 Welcome!")
     st.markdown(
-        "Use the sidebar to **upload a CSV file**. "
-        "The agent will automatically profile it, and you can start asking questions."
+        "Use the sidebar to **upload one or more datasets** (`.csv`, `.xlsx`, `.xls`, `.parquet`, `.json`). "
+        "The agent will automatically profile schemas, discover potential relational join keys, and answer complex analytical questions."
     )
     st.info(
         "💡 **Example questions you can ask:**\n"
-        "- *What are the key trends in this dataset?*\n"
-        "- *Which category has the highest average value?*\n"
-        "- *What is the biggest outlier?*\n"
-        "- *Show me a breakdown by the top column*\n"
-        "- *What correlations exist between the numeric columns?*"
+        "- *What are the key trends and correlations in this dataset?*\n"
+        "- *Join the orders and customers tables to find top buyers by lifetime value.*\n"
+        "- *Which product category has the highest average revenue?*\n"
+        "- *Identify anomalies and outliers across numeric metrics.*\n"
+        "- *Create an interactive breakdown comparing performance across groups.*"
     )
     st.stop()
 
-# ── Dataset loaded — show overview + chat ──
-df = st.session_state.df
+# ── Datasets loaded — show overview + chat ──
+dfs = st.session_state.dfs
 profile = st.session_state.profile or {}
+is_multi = profile.get("is_multi_dataset", len(dfs) > 1)
 
-# Metric cards
-shape = profile.get("shape", {})
-n_rows = shape.get("rows", len(df) if df is not None else 0)
-n_cols = shape.get("columns", len(df.columns) if df is not None else 0)
-mem_mb = profile.get("memory_mb", "?")
-null_pct = round(df.isnull().mean().mean() * 100, 1) if df is not None else 0.0
+if is_multi:
+    s = profile.get("summary", {})
+    n_tables = s.get("total_datasets", len(dfs))
+    n_rows = s.get("total_rows", sum(len(d) for d in dfs.values()))
+    n_cols = sum(len(d.columns) for d in dfs.values())
+    mem_mb = s.get("total_memory_mb", round(sum(d.memory_usage(deep=True).sum() for d in dfs.values()) / 1_048_576, 2))
 
-st.markdown(
-    f"""
+    st.markdown(
+        f"""
+<div class="metric-row">
+    <div class="metric-card">
+        <div class="metric-value">{n_tables}</div>
+        <div class="metric-label">Tables Loaded</div>
+    </div>
+    <div class="metric-card">
+        <div class="metric-value">{n_rows:,}</div>
+        <div class="metric-label">Total Records</div>
+    </div>
+    <div class="metric-card">
+        <div class="metric-value">{n_cols}</div>
+        <div class="metric-label">Total Features</div>
+    </div>
+    <div class="metric-card">
+        <div class="metric-value">{mem_mb} MB</div>
+        <div class="metric-label">Memory Footprint</div>
+    </div>
+</div>
+""",
+        unsafe_allow_html=True,
+    )
+
+    # Display detected relational join keys
+    common_keys = profile.get("common_keys_for_joins", [])
+    if common_keys:
+        keys_summary = ", ".join([f"`{k['column']}` ({', '.join(k['tables'])})" for k in common_keys])
+        st.info(f"🔗 **Relational Link Detected:** Shared join key(s): {keys_summary}. The AI agent can perform cross-table merges seamlessly.")
+
+    # Multi-tab data preview
+    with st.expander("🔍 Preview Loaded Datasets", expanded=False):
+        tab_titles = [f"📄 {name} ({len(d):,} rows)" for name, d in dfs.items()]
+        tabs = st.tabs(tab_titles)
+        for tab, (t_name, t_df) in zip(tabs, dfs.items()):
+            with tab:
+                st.dataframe(t_df.head(50), width="stretch", height=280)
+                st.caption(f"Showing first 50 rows of {len(t_df):,} total for `{t_name}`.")
+else:
+    df = st.session_state.df
+    shape = profile.get("shape", {})
+    n_rows = shape.get("rows", len(df) if df is not None else 0)
+    n_cols = shape.get("columns", len(df.columns) if df is not None else 0)
+    mem_mb = profile.get("memory_mb", "?")
+    null_pct = round(df.isnull().mean().mean() * 100, 1) if df is not None else 0.0
+
+    st.markdown(
+        f"""
 <div class="metric-row">
     <div class="metric-card">
         <div class="metric-value">{n_rows:,}</div>
@@ -336,13 +426,12 @@ st.markdown(
     </div>
 </div>
 """,
-    unsafe_allow_html=True,
-)
+        unsafe_allow_html=True,
+    )
 
-# Data preview in expander
-with st.expander("🔍 Preview Dataset", expanded=False):
-    st.dataframe(df.head(50), width="stretch", height=300)
-    st.caption(f"Showing first 50 rows of {n_rows:,} total.")
+    with st.expander("🔍 Preview Dataset", expanded=False):
+        st.dataframe(df.head(50), width="stretch", height=300)
+        st.caption(f"Showing first 50 rows of {n_rows:,} total.")
 
 st.markdown('<hr class="section-divider">', unsafe_allow_html=True)
 
@@ -353,34 +442,30 @@ st.markdown('<hr class="section-divider">', unsafe_allow_html=True)
 st.markdown("### 💬 Ask the Agent")
 
 # Display chat history
-for entry in st.session_state.chat_log:
-    if entry["role"] == "user":
+for entry_idx, entry in enumerate(st.session_state.chat_log):
+    if entry.get("role") == "user":
         with st.chat_message("user", avatar="👤"):
-            st.markdown(entry["content"])
+            st.markdown(entry.get("content", ""))
     else:
         with st.chat_message("assistant", avatar="📊"):
-            st.markdown(entry["content"])
+            st.markdown(entry.get("content", ""))
 
-            # Show charts if any (or generate empirical breakdown if missing)
+            # Show charts if any
             charts_to_display = entry.get("charts") or []
-            if not charts_to_display and st.session_state.df is not None:
-                try:
-                    from src.reporter import _generate_fallback_chart
-
-                    fb = _generate_fallback_chart(st.session_state.df)
-                    if fb:
-                        charts_to_display = [fb]
-                        entry["charts"] = charts_to_display
-                except Exception:
-                    pass
-
             if charts_to_display:
-                for i, chart_bytes in enumerate(charts_to_display):
-                    st.image(
-                        chart_bytes,
-                        caption=f"📊 Visual Intelligence Breakdown (Figure {i + 1})",
-                        width="stretch",
-                    )
+                for i, chart in enumerate(charts_to_display):
+                    if hasattr(chart, "to_dict") and hasattr(chart, "data"):
+                        st.plotly_chart(
+                            chart,
+                            use_container_width=True,
+                            key=f"chart_{entry_idx}_{i}",
+                        )
+                    elif isinstance(chart, bytes):
+                        st.image(
+                            chart,
+                            caption=f"📊 Visual Intelligence Breakdown (Figure {i + 1})",
+                            width="stretch",
+                        )
 
             # Show executed code in expander
             if entry.get("code"):
@@ -435,12 +520,15 @@ if user_question:
                 success = data.get("success", False)
                 stdout = data.get("stdout", "")
                 has_chart = data.get("has_chart", False)
+                is_plotly = data.get("is_plotly", False)
                 if success:
                     status_box.write(f"✅ Step {step} execution successful.")
                     if stdout:
                         with status_box.expander(f"Output Preview (Step {step})", expanded=False):
                             status_box.text(stdout[:800] + ("..." if len(stdout) > 800 else ""))
-                    if has_chart:
+                    if is_plotly:
+                        status_box.write("📈 Interactive Plotly visualization generated & captured.")
+                    elif has_chart:
                         status_box.write("📈 Data visualization generated & captured.")
                 else:
                     err = data.get("error", "Unknown error")
@@ -498,7 +586,7 @@ if user_question:
 
 
 # ──────────────────────────────────────────────
-# PDF Report Download (appears after at least one substantive agent response)
+# Export Deliverables (PDF Briefing & Jupyter Notebook)
 # ──────────────────────────────────────────────
 def _is_substantive_report(content: str) -> bool:
     """Checks if an agent response is a substantive report rather than an error or intermediate chatter."""
@@ -506,57 +594,101 @@ def _is_substantive_report(content: str) -> bool:
 
 valid_agent_responses = [
     e for e in st.session_state.chat_log
-    if e.get("role") == "agent" and _is_substantive_report(e.get("content", ""))
+    if e.get("role") in ("agent", "assistant") and _is_substantive_report(e.get("content", ""))
 ]
 
 if valid_agent_responses:
     st.markdown('<hr class="section-divider">', unsafe_allow_html=True)
-    st.markdown("### 📥 Download Executive Report")
+    st.markdown("### 📥 Export Deliverables")
 
-    # Use the latest valid agent response for the report
-    latest = valid_agent_responses[-1]
-    # Collect all charts and code from entire conversation
     all_charts = []
     all_code = []
     all_questions = []
+    agent_answers = []
+
     for entry in st.session_state.chat_log:
-        if entry["role"] == "agent":
-            all_charts.extend(entry.get("charts", []))
-            all_code.extend(entry.get("code", []))
-        elif entry["role"] == "user":
-            all_questions.append(entry["content"])
+        if entry.get("role") in ("agent", "assistant"):
+            if entry.get("charts"):
+                all_charts.extend(entry["charts"])
+            if entry.get("code"):
+                all_code.extend(entry["code"])
+            if _is_substantive_report(entry.get("content", "")):
+                agent_answers.append(entry["content"])
+        elif entry.get("role") == "user":
+            all_questions.append(entry.get("content", ""))
 
     combined_question = (
-        " | ".join(all_questions) if all_questions else "General Analysis"
+        " | ".join(all_questions) if all_questions else "Comprehensive Dataset Analysis"
     )
 
-    if st.button(
-        "📄 Generate & Download PDF Report", width="stretch", type="primary"
-    ):
-        with st.spinner("Generating executive PDF report…"):
-            try:
-                pdf_bytes = generate_pdf_report(
-                    dataset_name=st.session_state.dataset_name,
-                    profile_dict=st.session_state.profile,
-                    user_question=combined_question,
-                    agent_answer=latest["content"],
-                    charts=all_charts if all_charts else None,
-                    executed_code=all_code if all_code else None,
-                    df=st.session_state.df,
-                )
-                st.session_state["generated_pdf"] = pdf_bytes
-                st.session_state["generated_pdf_name"] = f"csv_insight_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf"
-                st.success(f"✅ Report successfully generated! ({len(pdf_bytes):,} bytes)")
-            except Exception as e:
-                st.error(f"❌ Failed to generate PDF: {e}")
+    # If multiple questions were investigated, compile each part clearly into the executive briefing
+    if len(agent_answers) > 1 and len(all_questions) == len(agent_answers):
+        combined_report_parts = []
+        for q_idx, (q, ans) in enumerate(zip(all_questions, agent_answers), 1):
+            combined_report_parts.append(f"# Investigation Part {q_idx}: {q.strip()}\n\n{ans.strip()}")
+        full_agent_answer = "\n\n---\n\n".join(combined_report_parts)
+    elif len(agent_answers) > 1:
+        full_agent_answer = "\n\n---\n\n".join(agent_answers)
+    elif agent_answers:
+        full_agent_answer = agent_answers[-1]
+    else:
+        full_agent_answer = valid_agent_responses[-1].get("content", "")
 
-    if st.session_state.get("generated_pdf"):
-        st.download_button(
-            label="⬇️ Download PDF Report",
-            data=st.session_state["generated_pdf"],
-            file_name=st.session_state.get(
-                "generated_pdf_name", f"csv_insight_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf"
-            ),
-            mime="application/pdf",
-            width="stretch",
-        )
+    col_pdf, col_nb = st.columns(2)
+
+    with col_pdf:
+        st.markdown("#### 📄 Executive PDF Report")
+        st.caption("Publication-ready formal briefing with visual charts, data audit, and key strategic takeaways.")
+
+        if st.button(
+            "📄 Generate PDF Report", width="stretch", type="primary"
+        ):
+            with st.spinner("Generating executive PDF report…"):
+                try:
+                    pdf_bytes = generate_pdf_report(
+                        dataset_name=st.session_state.dataset_name,
+                        profile_dict=st.session_state.profile,
+                        user_question=combined_question,
+                        agent_answer=full_agent_answer,
+                        charts=all_charts if all_charts else None,
+                        executed_code=all_code if all_code else None,
+                        df=st.session_state.df,
+                    )
+                    st.session_state["generated_pdf"] = pdf_bytes
+                    st.session_state["generated_pdf_name"] = f"csv_insight_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf"
+                    st.success(f"✅ PDF successfully generated! ({len(pdf_bytes):,} bytes)")
+                except Exception as e:
+                    st.error(f"❌ Failed to generate PDF: {e}")
+
+        if st.session_state.get("generated_pdf"):
+            st.download_button(
+                label="⬇️ Download PDF Report",
+                data=st.session_state["generated_pdf"],
+                file_name=st.session_state.get(
+                    "generated_pdf_name", f"csv_insight_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf"
+                ),
+                mime="application/pdf",
+                width="stretch",
+            )
+
+    with col_nb:
+        st.markdown("#### 📓 Jupyter Notebook (.ipynb)")
+        st.caption("Reproducible data science notebook containing all executed Python scripts, outputs & Plotly charts.")
+
+        try:
+            target_names = st.session_state.get("dataset_names") or [st.session_state.dataset_name or "dataset.csv"]
+            nb_json = generate_jupyter_notebook(
+                dataset_names=target_names,
+                chat_log=st.session_state.chat_log,
+                profile_dict=st.session_state.profile,
+            )
+            st.download_button(
+                label="⬇️ Download Jupyter Notebook (.ipynb)",
+                data=nb_json,
+                file_name=f"csv_insight_notebook_{datetime.now().strftime('%Y%m%d_%H%M%S')}.ipynb",
+                mime="application/x-ipynb+json",
+                width="stretch",
+                type="secondary",
+            )
+        except Exception as e:
+            st.error(f"❌ Failed to prepare notebook: {e}")

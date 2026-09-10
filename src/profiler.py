@@ -1,38 +1,102 @@
+import os
 import numpy as np
 import pandas as pd
 
-# 1. Load CSV with smart defaults
+# 1. Multi-Format Dataset Loader (CSV, Excel, Parquet, JSON)
 
 
-def load_csv(path_or_buffer, large_threshold=500_000):
+def load_dataset(path_or_buffer, filename: str = "", large_threshold: int = 500_000):
     """
-    Load a CSV into a pandas DataFrame.
-    - Tries normal loading first.
-    - If the file has more rows than large_threshold, falls back to
-      chunked reading (reads first large_threshold rows only for profiling).
-    - Downcasts numeric columns to save memory.
-
+    Load any supported data file (CSV, Excel, Parquet, JSON) into a pandas DataFrame.
+    
+    Supports:
+      - .csv: Comma-separated values
+      - .xlsx, .xls: Excel spreadsheets (handles active or single sheets)
+      - .parquet: Columnar parquet storage
+      - .json: Structured records or tabular JSON
+    
     Returns: (df, was_truncated)
-        df             — the loaded DataFrame
-        was_truncated  — True if we only loaded a sample of a huge file
     """
-    # First, try normal load
+    # Detect file extension
+    fname = filename or getattr(path_or_buffer, "name", "") or ""
+    ext = os.path.splitext(fname)[1].lower()
+
     try:
-        df = pd.read_csv(path_or_buffer, low_memory=False)
+        if ext in [".xlsx", ".xls"]:
+            # If Excel, read first sheet by default (or active sheet)
+            excel_data = pd.read_excel(path_or_buffer, sheet_name=None)
+            if isinstance(excel_data, dict):
+                first_sheet = next(iter(excel_data.keys()))
+                df = excel_data[first_sheet]
+            else:
+                df = excel_data
+        elif ext == ".parquet":
+            df = pd.read_parquet(path_or_buffer)
+        elif ext == ".json":
+            try:
+                df = pd.read_json(path_or_buffer)
+            except ValueError:
+                # Try reading line-delimited JSON
+                if hasattr(path_or_buffer, "seek"):
+                    path_or_buffer.seek(0)
+                df = pd.read_json(path_or_buffer, lines=True)
+        else:
+            # Default to CSV parser
+            df = pd.read_csv(path_or_buffer, low_memory=False)
     except Exception as e:
-        raise ValueError(f"Could not read the CSV file: {e}")
+        format_name = ext.replace(".", "").upper() if ext else "data"
+        raise ValueError(f"Could not read {format_name} file: {e}")
 
     was_truncated = False
-
-    # If too large, keep only the first `large_threshold` rows for profiling
     if len(df) > large_threshold:
         df = df.head(large_threshold)
         was_truncated = True
 
-    # Downcast numeric columns to save memory
     df = _downcast_numerics(df)
-
     return df, was_truncated
+
+
+def load_csv(path_or_buffer, large_threshold: int = 500_000):
+    """Backwards-compatible wrapper for load_dataset."""
+    return load_dataset(path_or_buffer, filename="data.csv", large_threshold=large_threshold)
+
+
+def load_multiple_files(files_or_buffers, large_threshold: int = 500_000) -> dict[str, tuple[pd.DataFrame, bool]]:
+    """
+    Load multiple uploaded files or file buffers into a dictionary of DataFrames.
+    
+    If an Excel file contains multiple sheets, each sheet is loaded as a separate table.
+    
+    Returns: dict mapping dataset_name -> (DataFrame, was_truncated)
+    """
+    results: dict[str, tuple[pd.DataFrame, bool]] = {}
+
+    for item in files_or_buffers:
+        fname = getattr(item, "name", "") or f"dataset_{len(results) + 1}.csv"
+        ext = os.path.splitext(fname)[1].lower()
+        base_name = os.path.splitext(fname)[0]
+
+        if ext in [".xlsx", ".xls"]:
+            try:
+                excel_sheets = pd.read_excel(item, sheet_name=None)
+                if isinstance(excel_sheets, dict) and len(excel_sheets) > 1:
+                    for s_name, sheet_df in excel_sheets.items():
+                        clean_key = f"{base_name}_{s_name}".strip()
+                        was_trunc = False
+                        if len(sheet_df) > large_threshold:
+                            sheet_df = sheet_df.head(large_threshold)
+                            was_trunc = True
+                        results[clean_key] = (_downcast_numerics(sheet_df), was_trunc)
+                    continue
+            except Exception:
+                pass  # fallback to standard loader below
+
+        if hasattr(item, "seek"):
+            item.seek(0)
+        df, was_trunc = load_dataset(item, filename=fname, large_threshold=large_threshold)
+        results[fname] = (df, was_trunc)
+
+    return results
 
 
 def _downcast_numerics(df):
@@ -93,6 +157,74 @@ def profile_dataframe(df, was_truncated=False):
         ]
 
     return profile
+
+
+def profile_datasets(dfs: dict[str, pd.DataFrame], was_truncated_dict: dict[str, bool] | None = None) -> dict:
+    """
+    Profile multiple DataFrames and identify cross-table relationships.
+    
+    Returns a unified profile dictionary containing:
+      - is_multi_dataset: bool
+      - summary: overall stats across all tables
+      - datasets: {dataset_name: single_profile_dict}
+      - common_keys_for_joins: shared column names that can be used to join tables
+      - (if single dataset, also includes top-level shape, columns, memory_mb for full backward compatibility)
+    """
+    if was_truncated_dict is None:
+        was_truncated_dict = {}
+
+    if not dfs:
+        return {"shape": {"rows": 0, "columns": 0}, "memory_mb": 0.0, "datasets": {}}
+
+    if len(dfs) == 1:
+        name, single_df = next(iter(dfs.items()))
+        single_prof = profile_dataframe(single_df, was_truncated=was_truncated_dict.get(name, False))
+        p = dict(single_prof)
+        p["dataset_name"] = name
+        p["is_multi_dataset"] = False
+        p["datasets"] = {name: single_prof}
+        return p
+
+    datasets_profile = {}
+    col_to_datasets: dict[str, list[str]] = {}
+    total_rows = 0
+    total_memory = 0.0
+
+    for name, df_item in dfs.items():
+        trunc = was_truncated_dict.get(name, False)
+        sub_prof = profile_dataframe(df_item, was_truncated=trunc)
+        datasets_profile[name] = sub_prof
+        total_rows += len(df_item)
+        total_memory += sub_prof.get("memory_mb", 0.0)
+
+        for col in df_item.columns:
+            clean_c = str(col).strip().lower()
+            if clean_c not in col_to_datasets:
+                col_to_datasets[clean_c] = []
+            col_to_datasets[clean_c].append(name)
+
+    # Detect shared columns across tables for joins
+    shared_keys = []
+    for c, ds_list in col_to_datasets.items():
+        if len(ds_list) > 1:
+            shared_keys.append({"column": c, "tables": ds_list})
+
+    multi_profile = {
+        "is_multi_dataset": True,
+        "summary": {
+            "total_datasets": len(dfs),
+            "dataset_names": list(dfs.keys()),
+            "total_rows": total_rows,
+            "total_memory_mb": round(total_memory, 2),
+        },
+        "datasets": datasets_profile,
+        "common_keys_for_joins": shared_keys,
+        "shape": {"rows": total_rows, "columns": sum(len(d.columns) for d in dfs.values())},
+        "memory_mb": round(total_memory, 2),
+        "truncated": any(was_truncated_dict.values()),
+    }
+
+    return multi_profile
 
 
 def _pick_interesting_columns(df, top_n):

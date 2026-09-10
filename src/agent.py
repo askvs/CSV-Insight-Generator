@@ -199,6 +199,31 @@ def _prune_past_history(history: list) -> list:
     return pruned
 
 
+def _safe_serialize_profile(profile_dict: dict) -> str:
+    """Safely serialize profile dictionary to JSON string without circular reference errors."""
+    if not profile_dict:
+        return "{}"
+    try:
+        return json.dumps(profile_dict, separators=(",", ":"), default=str)
+    except Exception:
+        # Decycle in case of any recursive references in cached objects
+        def _decycle(obj, seen=None):
+            if seen is None:
+                seen = set()
+            obj_id = id(obj)
+            if obj_id in seen:
+                return "<reference>"
+            seen.add(obj_id)
+            if isinstance(obj, dict):
+                return {str(k): _decycle(v, seen.copy()) for k, v in obj.items()}
+            elif isinstance(obj, list):
+                return [_decycle(item, seen.copy()) for item in obj]
+            return obj
+
+        safe_dict = _decycle(profile_dict)
+        return json.dumps(safe_dict, separators=(",", ":"), default=str)
+
+
 class CSVInsightAgent:
     """Agent that uses Groq LLM with tool-calling to analyze CSV data."""
 
@@ -249,8 +274,9 @@ class CSVInsightAgent:
 
         # Build initial system message or prune past turns
         if not history:
-            profile_str = json.dumps(profile_dict, separators=(",", ":"), default=str)
-            initial_system_content = f"{SYSTEM_PROMPT}\n\nHere is the factual profile of the loaded DataFrame 'df':\n```json\n{profile_str}\n```"
+            profile_str = _safe_serialize_profile(profile_dict)
+            target_label = "the loaded datasets ('dfs')" if profile_dict.get("is_multi_dataset") else "the loaded DataFrame 'df'"
+            initial_system_content = f"{SYSTEM_PROMPT}\n\nHere is the factual profile of {target_label}:\n```json\n{profile_str}\n```"
             history = [{"role": "system", "content": initial_system_content}]
         else:
             history = _prune_past_history(history)
@@ -346,8 +372,14 @@ class CSVInsightAgent:
                                     except Exception:
                                         pass
                                 exec_result = execute_python(code, namespace)
-                                if exec_result.get("chart_png"):
-                                    charts.append(exec_result["chart_png"])
+                                new_charts = exec_result.get("all_charts") or []
+                                if not new_charts:
+                                    item = exec_result.get("plotly_fig") or exec_result.get("chart_png")
+                                    if item is not None:
+                                        new_charts = [item]
+                                for ch in new_charts:
+                                    if ch not in charts:
+                                        charts.append(ch)
                                 if status_callback and callable(status_callback):
                                     try:
                                         status_callback(
@@ -355,7 +387,8 @@ class CSVInsightAgent:
                                             {
                                                 "step": turn_count,
                                                 "stdout": exec_result.get("stdout"),
-                                                "has_chart": bool(exec_result.get("chart_png")),
+                                                "has_chart": bool(exec_result.get("has_chart")),
+                                                "is_plotly": bool(exec_result.get("plotly_fig") is not None),
                                                 "success": exec_result.get("success"),
                                                 "error": exec_result.get("error"),
                                             },
@@ -373,11 +406,12 @@ class CSVInsightAgent:
                                     exec_result["stdout"]
                                     or "Code executed successfully."
                                 )
-                                chart_msg = (
-                                    "\n(Note: Chart was successfully generated and captured.)"
-                                    if exec_result.get("chart_png")
-                                    else ""
-                                )
+                                if exec_result.get("plotly_fig") is not None:
+                                    chart_msg = "\n(Note: Interactive Plotly chart was successfully generated and captured.)"
+                                elif exec_result.get("chart_png"):
+                                    chart_msg = "\n(Note: Chart was successfully generated and captured.)"
+                                else:
+                                    chart_msg = ""
                                 history.append(
                                     {
                                         "role": "user",
@@ -523,8 +557,14 @@ class CSVInsightAgent:
                                     except Exception:
                                         pass
                                 exec_result = execute_python(code, namespace)
-                                if exec_result.get("chart_png"):
-                                    charts.append(exec_result["chart_png"])
+                                new_charts = exec_result.get("all_charts") or []
+                                if not new_charts:
+                                    item = exec_result.get("plotly_fig") or exec_result.get("chart_png")
+                                    if item is not None:
+                                        new_charts = [item]
+                                for ch in new_charts:
+                                    if ch not in charts:
+                                        charts.append(ch)
                                 if status_callback and callable(status_callback):
                                     try:
                                         status_callback(
@@ -532,7 +572,8 @@ class CSVInsightAgent:
                                             {
                                                 "step": turn_count,
                                                 "stdout": exec_result.get("stdout"),
-                                                "has_chart": bool(exec_result.get("chart_png")),
+                                                "has_chart": bool(exec_result.get("has_chart")),
+                                                "is_plotly": bool(exec_result.get("plotly_fig") is not None),
                                                 "success": exec_result.get("success"),
                                                 "error": exec_result.get("error"),
                                             },
@@ -628,9 +669,15 @@ class CSVInsightAgent:
                     # Execute in sandbox
                     exec_result = execute_python(code, namespace)
 
-                    # Store chart if created
-                    if exec_result.get("chart_png"):
-                        charts.append(exec_result["chart_png"])
+                    # Store all charts if created (Plotly and/or Matplotlib)
+                    new_charts = exec_result.get("all_charts") or []
+                    if not new_charts:
+                        item = exec_result.get("plotly_fig") or exec_result.get("chart_png")
+                        if item is not None:
+                            new_charts = [item]
+                    for ch in new_charts:
+                        if ch not in charts:
+                            charts.append(ch)
 
                     if status_callback and callable(status_callback):
                         try:
@@ -639,7 +686,8 @@ class CSVInsightAgent:
                                 {
                                     "step": turn_count,
                                     "stdout": exec_result.get("stdout"),
-                                    "has_chart": bool(exec_result.get("chart_png")),
+                                    "has_chart": bool(exec_result.get("has_chart")),
+                                    "is_plotly": bool(exec_result.get("plotly_fig") is not None),
                                     "success": exec_result.get("success"),
                                     "error": exec_result.get("error"),
                                 },
@@ -653,11 +701,12 @@ class CSVInsightAgent:
                             exec_result["stdout"]
                             or "Code executed successfully with no print output."
                         )
-                        chart_msg = (
-                            "\n(Note: A matplotlib chart was successfully generated and captured.)"
-                            if exec_result.get("chart_png")
-                            else ""
-                        )
+                        if exec_result.get("plotly_fig") is not None:
+                            chart_msg = "\n(Note: An interactive Plotly visualization was successfully generated and captured.)"
+                        elif exec_result.get("chart_png"):
+                            chart_msg = "\n(Note: A matplotlib chart was successfully generated and captured.)"
+                        else:
+                            chart_msg = ""
                         tool_output_content = (
                             f"EXECUTION SUCCESSFUL:\n{stdout_str}{chart_msg}\n\n"
                             "All required data and visualizations have been successfully computed. "

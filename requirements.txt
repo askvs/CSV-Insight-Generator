@@ -5,3 +5,6 @@ groq
 reportlab
 python-dotenv
 streamlit
+plotly
+openpyxl
+kaleido
