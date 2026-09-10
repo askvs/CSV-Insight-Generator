@@ -110,9 +110,9 @@ def _downcast_numerics(df):
 
 # 2. Build profile dictionary
 
-# When a dataset has more columns than this, we only include detailed stats
-# for the top-N most "interesting" columns and summarize the rest briefly.
-TOP_N_COLUMNS = 20
+# When a dataset has more columns than this, we include detailed stats
+# for the top-N most interesting columns and summarize the rest cleanly with unique values.
+TOP_N_COLUMNS = 30
 
 
 def profile_dataframe(df, was_truncated=False):
@@ -123,7 +123,7 @@ def profile_dataframe(df, was_truncated=False):
       - shape (rows, columns)
       - memory usage
       - per-column stats (dtype, nulls, unique count, and type-specific stats)
-      - for wide datasets: detailed stats for top-N columns, brief for the rest
+      - for wide datasets: detailed stats for top-N columns, and category/value samples for the rest
 
     Returns: dict
     """
@@ -150,11 +150,14 @@ def profile_dataframe(df, was_truncated=False):
     for col in detailed_cols:
         profile["columns"][col] = _profile_column(df[col])
 
-    # Brief summaries for the rest (wide datasets)
+    # Enriched summaries for the rest (wide datasets) with unique values for categories
     if brief_cols:
-        profile["other_columns"] = [
-            {"name": c, "dtype": str(df[c].dtype)} for c in brief_cols
-        ]
+        profile["other_columns"] = []
+        for c in brief_cols:
+            col_info = {"name": c, "dtype": str(df[c].dtype), "n_unique": int(df[c].nunique())}
+            if df[c].nunique() <= 30:
+                col_info["unique_values"] = [str(x) for x in df[c].dropna().unique()[:30]]
+            profile["other_columns"].append(col_info)
 
     return profile
 
@@ -232,34 +235,38 @@ def _pick_interesting_columns(df, top_n):
     Rank columns by "interestingness" and return the top-N names.
 
     Scoring (simple heuristic):
-      - Numeric columns score higher (more analysis potential)
-      - Columns with fewer nulls score higher
-      - Datetime-like columns score higher
-      - Columns with moderate unique counts score higher than near-constant
-        or near-unique columns
+      - Categorical/text columns with 2-60 unique values (e.g. City, Occupation, Brand, Gender)
+        are vital dimensions for filtering/grouping and receive top priority.
+      - Numeric columns score high for statistical aggregation.
+      - Datetime-like columns score high for trend analysis.
+      - Columns with fewer nulls score higher.
     """
     scores = {}
     for col in df.columns:
         s = df[col]
         score = 0.0
+        n_unique = s.nunique()
 
-        # Prefer numeric
+        # Categorical / string / boolean dimensions with reasonable cardinality
+        if not pd.api.types.is_numeric_dtype(s) and not pd.api.types.is_datetime64_any_dtype(s):
+            if 2 <= n_unique <= 60:
+                score += 4.5  # Critical business slicing dimensions
+            elif n_unique > 60:
+                score += 1.0
+
+        # Numeric
         if pd.api.types.is_numeric_dtype(s):
             score += 3.0
-        # Prefer datetime
+            if 2 <= n_unique <= 50:
+                score += 1.5
+
+        # Datetime
         if pd.api.types.is_datetime64_any_dtype(s):
-            score += 2.0
+            score += 3.0
 
         # Penalise high null %
         null_frac = s.isna().mean()
         score += (1.0 - null_frac) * 2.0
-
-        # Prefer moderate cardinality (not 1, not all-unique)
-        n_unique = s.nunique()
-        if 2 <= n_unique <= 50:
-            score += 2.0
-        elif 50 < n_unique <= 500:
-            score += 1.0
 
         scores[col] = score
 
@@ -269,11 +276,12 @@ def _pick_interesting_columns(df, top_n):
 
 def _profile_column(series):
     """Return a stats dict for one column."""
+    n_uniq = int(series.nunique())
     info = {
         "dtype": str(series.dtype),
         "null_count": int(series.isna().sum()),
-        "null_pct": round(series.isna().mean() * 100, 1),
-        "n_unique": int(series.nunique()),
+        "null_pct": float(round(series.isna().mean() * 100, 1)),
+        "n_unique": n_uniq,
     }
 
     # --- Numeric columns ---
@@ -300,10 +308,14 @@ def _profile_column(series):
 
     # --- Categorical / text columns ---
     else:
-        top_values = series.value_counts().head(5)
+        top_values = series.value_counts().head(8)
         info["top_values_by_row_count"] = {
             str(k): int(v) for k, v in top_values.items()
         }
+        # Provide full unique values list for filtering if reasonable size
+        if n_uniq <= 30:
+            info["categories"] = [str(x) for x in series.dropna().unique()[:30]]
+
         # Average string length (useful indicator)
         if series.dtype == object:
             sample = series.dropna().head(1000)

@@ -13,43 +13,28 @@ DATASET ACCESS & ENVIRONMENT:
 
 CRITICAL DATA & ANALYSIS RULES:
 
-1. ONE-PASS EXECUTION: When calling `execute_python`, perform all necessary calculations, print all metrics, and create your visualization in a single comprehensive script. Keep your script focused, clean, and under 40 lines.
+1. ONE-PASS COMPLETE CALCULATION: When calling `execute_python`, calculate all the concrete metrics needed to answer the user's question, print summary statistics, and generate your chart in a single cohesive script. Do NOT execute exploratory scripts that merely print `.unique()` without computing the actual answer. You can inspect column categories directly from the provided dataset profile!
 2. STRICT JSON & PYTHON SYNTAX: When calling `execute_python`, your `code` argument MUST be strictly valid Python code. Ensure all string literals, quotes, and plot labels are properly closed with matching quotes. Always print your computed results so you can inspect them.
 3. ALWAYS RUN PYTHON CODE FOR NUMBERS: Never guess or estimate numbers. Every single percentage, count, mean, median, or ranking must come directly from executed Python output.
 4. VISUALIZATIONS ARE MANDATORY (PREFER INTERACTIVE PLOTLY):
    - For every analytical question, you MUST generate at least one high-clarity visualization.
-   - PREFER PLOTLY: Use `plotly.express as px` or `plotly.graph_objects as go` (e.g., `fig = px.bar(df, ...); fig.show()`, `fig = px.line(...)`, `fig = px.scatter(...)`, `fig = px.pie(...)`).
-     Plotly provides interactive hover tooltips, zooming, and modern styling in the web UI.
+   - PREFER PLOTLY: Use `plotly.express as px` or `plotly.graph_objects as go`.
+   - IMPORTANT PLOTLY PATTERN: When creating a bar chart from `.value_counts()`, ALWAYS reset the index:
+     ```python
+     vc = subset['Column'].value_counts().reset_index()
+     vc.columns = ['Category', 'Count']
+     fig = px.bar(vc, x='Category', y='Count', title='...')
+     fig.show()
+     ```
    - Alternatively, you can use matplotlib (`plt.figure(figsize=(9, 4.5))`, `plt.bar(...)`).
    - Calling `fig.show()` or assigning `fig = ...` automatically captures the visualization.
 5. USE EXISTING COLUMNS DIRECTLY:
-   - Always inspect the dataset profile to discover available column names. Use them exactly as they appear.
+   - Always inspect the dataset profile to discover available column names and category values. Use them exactly as they appear.
    - Never overwrite or drop existing columns in `df` or `dfs`.
-6. COMPREHENSIVE FINAL ANSWER & TEXT EXPLANATION:
-   Immediately after Python executes, call `final_answer`. A visualization must NEVER be returned without an accompanying text explanation.
-   - For direct or focused inquiries (e.g., lookups, single metrics, top rankings): Give a clear, direct answer supported by a thorough explanation of what the computed numbers mean, key context, and what the chart reveals.
-   - For in-depth business or exploratory inquiries: Deliver an exhaustive executive briefing structured as follows:
-
-   # 1. Executive Summary
-   - Direct, unambiguous bottom-line answer to the user's inquiry with high-impact key statistics (e.g., total count, percentage share, average metrics).
-   - Core takeaway summarized in 2-3 powerful sentences.
-
-   # 2. Key Empirical Findings & Comparative Breakdown
-   - Detailed quantitative breakdown comparing cohorts/groups or cross-table join metrics.
-   - Include a Markdown Table summarizing key metrics (e.g. Group, User Count, Percentage, Average Metrics).
-   - Clear bullet points highlighting specific demographic, behavioral, or financial patterns.
-
-   **Key Insight:** [State a profound, non-obvious finding derived from the data with supporting metrics]
-
-   # 3. Behavioral & Root-Cause Drivers
-   - In-depth analysis of why the observed patterns occur (e.g., correlation with app usage, device type, stress levels, occupation, etc.).
-
-   # 4. Strategic Recommendations & Action Plan
-   **Strategic Recommendation:** [Detailed, actionable business initiative #1 with target metric and expected business impact]
-   **Strategic Recommendation:** [Detailed, actionable business initiative #2 with target metric and expected business impact]
-
-   # 5. Risk Assessment & Operational Considerations
-   **Risk:** [Key risks, data limitations, potential blind spots, or caveats to keep in mind when acting on these findings]
+6. COMPREHENSIVE FINAL ANSWER & TEXT EXPLANATION MANDATORY:
+   Immediately after Python executes, call `final_answer`. A visualization must NEVER be returned without an accompanying thorough text explanation. It is UNACCEPTABLE to return empty text, raw code, or brief notes like "Review the chart above".
+   - Direct, unambiguous bottom-line answer to the user's inquiry with high-impact key statistics (e.g., top category, percentage share, exact counts).
+   - For in-depth business inquiries, deliver the full 5-section executive briefing (Executive Summary, Key Empirical Findings & Comparative Breakdown, Behavioral & Root-Cause Drivers, Strategic Recommendations, and Risk Assessment).
 
 Be thorough, precise, and professional. Ensure no chart is left unexplained.
 """

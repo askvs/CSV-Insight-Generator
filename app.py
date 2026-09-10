@@ -74,6 +74,18 @@ section[data-testid="stSidebar"] .stFileUploader label {
     font-weight: 600;
 }
 
+/* ---------- Hide 200MB limit text while uploading ---------- */
+[data-testid="stFileUploaderDropzoneInstructions"] small,
+[data-testid="stFileUploaderDropzone"] small,
+[data-testid="stFileUploaderInstructions"],
+[data-testid="stFileUploader"] small,
+section[data-testid="stSidebar"] [data-testid="stFileUploader"] small,
+div[data-testid="stFileUploader"] section small,
+div[data-testid="stFileUploader"] small,
+.stFileUploader small {
+    display: none !important;
+}
+
 /* ---------- Header banner ---------- */
 .app-header {
     background: linear-gradient(135deg, #0B2545 0%, #134074 50%, #1E3A5F 100%);
@@ -448,7 +460,10 @@ for entry_idx, entry in enumerate(st.session_state.chat_log):
             st.markdown(entry.get("content", ""))
     else:
         with st.chat_message("assistant", avatar="📊"):
-            st.markdown(entry.get("content", ""))
+            agent_content = (entry.get("content") or "").strip()
+            if not agent_content:
+                agent_content = "### 📊 Analysis Complete\n\nReview the visual breakdown and executed code below."
+            st.markdown(agent_content)
 
             # Show charts if any
             charts_to_display = entry.get("charts") or []
@@ -557,10 +572,13 @@ if user_question:
             st.session_state.history = result["history"]
 
             # Add agent response to chat log
+            ans = (result.get("answer") or "").strip()
+            if not ans:
+                ans = "### 📊 Analysis Complete\n\nComputed empirical findings and visual charts are provided below."
             st.session_state.chat_log.append(
                 {
                     "role": "agent",
-                    "content": result["answer"],
+                    "content": ans,
                     "charts": result["charts"],
                     "code": result["executed_code"],
                 }

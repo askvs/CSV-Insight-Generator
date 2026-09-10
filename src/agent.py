@@ -143,25 +143,20 @@ def _is_valid_executive_report(text: str | None) -> bool:
     if t.startswith("```python") and t.endswith("```") and len(t.splitlines()) < 8:
         return False
     lower = t.lower()
-    intermediate_cues = [
+    chatter_starts = (
         "let me execute",
         "i need to run",
         "let me run",
         "i will run",
         "let's execute",
         "executing python",
-        "running analysis",
-        "let me analyze",
         "i will execute",
-        "let me write",
-        "let me compute",
-        "i need to analyze",
         "i will calculate",
-        "let's check the",
-    ]
-    if any(cue in lower for cue in intermediate_cues) and len(t.split()) < 40:
+        "i will write",
+    )
+    if any(lower.startswith(cue) for cue in chatter_starts) and len(t.split()) < 25:
         return False
-    if len(t.split()) < 4:
+    if len(t.split()) < 3:
         return False
     return True
 
@@ -248,7 +243,7 @@ class CSVInsightAgent:
         profile_dict: dict,
         namespace: dict,
         history: list | None = None,
-        max_turns: int = 4,
+        max_turns: int = 6,
         status_callback: object = None,
     ) -> dict:
         """
@@ -415,7 +410,7 @@ class CSVInsightAgent:
                                 history.append(
                                     {
                                         "role": "user",
-                                        "content": f"Tool execution result:\n{stdout_str}{chart_msg}\nNow deliver your complete 5-section executive report.",
+                                        "content": f"Tool execution result:\n{stdout_str}{chart_msg}\nIf calculations and charts are complete, call 'final_answer' now with your full report; otherwise call 'execute_python' to continue analysis.",
                                     }
                                 )
                                 response = None
@@ -709,8 +704,8 @@ class CSVInsightAgent:
                             chart_msg = ""
                         tool_output_content = (
                             f"EXECUTION SUCCESSFUL:\n{stdout_str}{chart_msg}\n\n"
-                            "All required data and visualizations have been successfully computed. "
-                            "Call 'final_answer' now to deliver your complete 5-section executive report."
+                            "If your computed results and visualizations fully answer the user's question, call 'final_answer' now with your complete executive report. "
+                            "If you still need additional data, calculations, or an interactive Plotly chart to fully answer the inquiry, call 'execute_python' again."
                         )
                     else:
                         tool_output_content = f"EXECUTION FAILED:\n{exec_result['error']}\nPlease analyze the error and fix your code."
@@ -738,6 +733,34 @@ class CSVInsightAgent:
                 except Exception:
                     pass
 
+            # Gather all tool outputs and executed code from history
+            collected_outputs = []
+            for msg in history:
+                if msg.get("role") == "tool" and msg.get("content"):
+                    raw_c = str(msg.get("content", ""))
+                    clean_c = re.sub(r"EXECUTION SUCCESSFUL:\s*", "", raw_c).strip()
+                    clean_c = re.sub(r"\(Note:.*?\)", "", clean_c).strip()
+                    clean_c = re.sub(r"All required data and visualizations.*", "", clean_c).strip()
+                    clean_c = re.sub(r"If your computed results.*", "", clean_c).strip()
+                    clean_c = re.sub(r"Call 'final_answer'.*", "", clean_c).strip()
+                    if clean_c:
+                        collected_outputs.append(clean_c)
+
+            data_context = "\n\n".join(collected_outputs).strip()
+            if not data_context:
+                data_context = "Analysis code was executed against the dataset."
+
+            synthesis_prompt = (
+                f"You are an executive data scientist and business advisor.\n\n"
+                f"The user asked the following question about the dataset:\n\"{user_question}\"\n\n"
+                f"Here are the empirical calculations and outputs produced by the Python analysis:\n"
+                f"```\n{data_context}\n```\n\n"
+                "Deliver a comprehensive, plain-English executive intelligence briefing answering the user's question directly. "
+                "Highlight the key numbers, rankings, percentages, and strategic insights. "
+                "Structure your response with clear markdown headings, bullet points, and an executive summary. "
+                "Do NOT output python code, XML tool tags, or conversational promises; output your complete answer now."
+            )
+
             candidate_models = [self.model_name] + [
                 m for m in DEFAULT_MODELS if m != self.model_name
             ]
@@ -749,19 +772,15 @@ class CSVInsightAgent:
                         synth_kwargs["max_tokens"] = 4096
                     else:
                         synth_kwargs["max_tokens"] = 4096
+
                     synthesis_resp = self.client.chat.completions.create(
                         model=cand_model,
-                        messages=history
-                        + [
+                        messages=[
                             {
-                                "role": "user",
-                                "content": (
-                                    "Based on all previous data analysis, executed Python code outputs, and generated charts, "
-                                    "provide a thorough plain-English explanation and direct answer to the user's question in clear markdown. "
-                                    "Explain the numerical findings and what the visualization shows in detail. "
-                                    "Do NOT output python code, XML tool tags, or conversational promises; output your complete answer and explanation now."
-                                ),
-                            }
+                                "role": "system",
+                                "content": "You are a Lead Data Science Advisor. Always deliver a thorough, structured, empirical plain-English answer in markdown.",
+                            },
+                            {"role": "user", "content": synthesis_prompt},
                         ],
                         temperature=0.2,
                         stream=False,
@@ -781,44 +800,20 @@ class CSVInsightAgent:
                 except Exception:
                     continue
 
-        # Guarantee visual intelligence is never empty if df is present in namespace
-        if not charts and namespace and isinstance(namespace.get("df"), object):
-            try:
-                from src.reporter import _generate_fallback_chart
-
-                # pyrefly: ignore [bad-argument-type]
-                fallback_chart = _generate_fallback_chart(namespace.get("df"))
-                if fallback_chart:
-                    charts.append(fallback_chart)
-            except Exception:
-                pass
-
         if not final_text or not final_text.strip():
-            recent_tool_msgs = [
-                str(msg.get("content", ""))
-                for msg in history
-                if msg.get("role") == "tool" and msg.get("content")
-            ]
-            if recent_tool_msgs:
-                clean_tool_output = re.sub(
-                    r"EXECUTION SUCCESSFUL:\s*", "", recent_tool_msgs[-1]
-                ).strip()
-                clean_tool_output = re.sub(
-                    r"\(Note:.*?\)", "", clean_tool_output
-                ).strip()
-                clean_tool_output = re.sub(
-                    r"All required data and visualizations.*", "", clean_tool_output
-                ).strip()
-                if clean_tool_output:
-                    final_text = f"### Summary of Findings\n\n{clean_tool_output}\n\n*Review the visual intelligence breakdown above for the plotted data.*"
-                elif charts:
-                    final_text = "Analysis completed with computed findings and visualizations. Review the visual breakdown above."
-                else:
-                    final_text = "Analysis completed. Review the executed Python code steps above for details."
+            # Robust formatted fallback when API is unreachable
+            if collected_outputs:
+                clean_lines = "\n".join([f"- {line}" for line in collected_outputs[-1].splitlines() if line.strip() and not line.startswith("<Arrow")])
+                final_text = (
+                    f"### Findings for: {user_question}\n\n"
+                    f"The dataset was analyzed and produced the following empirical results:\n\n"
+                    f"{clean_lines if clean_lines else collected_outputs[-1]}\n\n"
+                    f"Review the generated visualizations and metrics above for complete details."
+                )
             elif charts:
-                final_text = "Analysis completed with computed findings and visualizations. Review the visual breakdown above."
+                final_text = f"### Analysis for: {user_question}\n\nAnalysis completed with computed findings and visualizations. Review the visual breakdown above."
             else:
-                final_text = "Analysis completed. Review the executed Python code steps above for details."
+                final_text = f"### Analysis for: {user_question}\n\nAnalysis completed. Review the executed Python code steps above for details."
 
         final_text = _clean_final_text(final_text)
 
