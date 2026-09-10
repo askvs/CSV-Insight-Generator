@@ -120,7 +120,11 @@ def _extract_code_from_raw_args(raw_args: str) -> str:
 
 
 def _clean_final_text(text: str | None) -> str:
-    """Strips <think> tags or raw tool XML artifacts if present in LLM outputs."""
+    """
+    Strips <think> tags or raw tool XML artifacts if present in LLM outputs,
+    and ensures proper Markdown formatting so tabular records and key metrics
+    never collapse into a single run-on paragraph.
+    """
     if not text:
         return ""
     cleaned = re.sub(r"<think>[\s\S]*?</think>", "", text).strip()
@@ -130,7 +134,41 @@ def _clean_final_text(text: str | None) -> str:
             cleaned = match.group(1).strip()
     # Strip any remaining tool tags if present
     cleaned = re.sub(r"</?(?:tool_call|function(?:=[^>]+)?|parameter(?:=[^>]+)?)>", "", cleaned).strip()
-    return cleaned
+
+    # Post-process lines outside fenced code blocks to prevent Markdown newline collapsing
+    parts = re.split(r"(```[\s\S]*?```)", cleaned)
+    formatted_parts = []
+    for part in parts:
+        if part.startswith("```"):
+            formatted_parts.append(part)
+            continue
+
+        lines = part.split("\n")
+        new_lines = []
+        for i, line in enumerate(lines):
+            stripped = line.strip()
+            if not stripped:
+                new_lines.append("")
+                continue
+
+            # If line is already a markdown heading, list item, table row, blockquote, or horizontal rule
+            if stripped.startswith(("#", "-", "*", ">", "|", "1.", "2.", "3.", "4.", "5.", "6.", "7.", "8.", "9.", "---", "___")):
+                new_lines.append(line)
+                continue
+
+            # If line is followed by another non-empty line that isn't a heading, table row, or list item,
+            # ensure it has 2 trailing spaces so Markdown treats it as a hard line break instead of collapsing it
+            if i + 1 < len(lines):
+                next_stripped = lines[i + 1].strip()
+                if next_stripped and not next_stripped.startswith(("#", "```", "---", "___")):
+                    new_lines.append(line.rstrip() + "  ")
+                    continue
+
+            new_lines.append(line)
+
+        formatted_parts.append("\n".join(new_lines))
+
+    return "".join(formatted_parts).strip()
 
 
 def _is_valid_executive_report(text: str | None) -> bool:
@@ -758,6 +796,11 @@ class CSVInsightAgent:
                 "Deliver a comprehensive, plain-English executive intelligence briefing answering the user's question directly. "
                 "Highlight the key numbers, rankings, percentages, and strategic insights. "
                 "Structure your response with clear markdown headings, bullet points, and an executive summary. "
+                "CRITICAL FORMATTING RULES:\n"
+                "- NEVER dump raw space-separated terminal or dataframe text, as Markdown collapses single newlines into a continuous paragraph.\n"
+                "- ALWAYS format lists of items, entities, rankings, or students as a clean Markdown table (| Col 1 | Col 2 |) with clear headers or as a bulleted list with bold names.\n"
+                "- Round all floating-point numbers cleanly (e.g., 68.4 mins, 2.17%).\n"
+                "- If there are many records (>15), state the total count, highlight key patterns, and present the top 10-15 rows in a clean Markdown table.\n"
                 "Do NOT output python code, XML tool tags, or conversational promises; output your complete answer now."
             )
 

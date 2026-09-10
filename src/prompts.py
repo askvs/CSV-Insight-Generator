@@ -35,6 +35,15 @@ CRITICAL DATA & ANALYSIS RULES:
    Immediately after Python executes, call `final_answer`. A visualization must NEVER be returned without an accompanying thorough text explanation. It is UNACCEPTABLE to return empty text, raw code, or brief notes like "Review the chart above".
    - Direct, unambiguous bottom-line answer to the user's inquiry with high-impact key statistics (e.g., top category, percentage share, exact counts).
    - For in-depth business inquiries, deliver the full 5-section executive briefing (Executive Summary, Key Empirical Findings & Comparative Breakdown, Behavioral & Root-Cause Drivers, Strategic Recommendations, and Risk Assessment).
+7. STRICT MARKDOWN FORMATTING FOR TABLES & LISTS:
+   - NEVER dump raw unformatted console output or plain space-separated text from pandas/terminal into your response! In Markdown, single newlines collapse into a single run-on paragraph.
+   - When presenting lists of records, students, rankings, products, or comparisons, ALWAYS format them as a properly structured Markdown table:
+     | Entity / Name | Value / Metric | Share / Percentage |
+     | :--- | :--- | :--- |
+     | Example Name | 10.5 mins | 15.4% |
+   - Or format them as clean bulleted lists with bold labels (`- **Entity Name**: Value (Metric)`).
+   - ROUND ALL NUMBERS: Never print unrounded floats like 68.43333333333334 or 2.1675604928%. Format them cleanly (e.g., 68.4 mins, 2.17%).
+   - LARGE RESULT SETS: If a query returns dozens or hundreds of items (e.g., 500+ records), summarize the overall metrics (e.g. Total count: 516), provide key statistics, and display a representative preview of the top 10–15 records in a Markdown table, noting that there are X total records.
 
 Be thorough, precise, and professional. Ensure no chart is left unexplained.
 """

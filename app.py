@@ -189,6 +189,37 @@ div[data-testid="stFileUploader"] small,
     margin: 1.5rem 0;
 }
 
+/* ---------- Tables inside Chat Messages ---------- */
+[data-testid="stChatMessage"] table {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 1rem 0;
+    font-size: 0.88rem;
+    border-radius: 8px;
+    overflow: hidden;
+    background-color: #1E293B;
+    border: 1px solid #334155;
+}
+[data-testid="stChatMessage"] th {
+    background-color: #0F172A;
+    color: #93C5FD !important;
+    font-weight: 600;
+    text-align: left;
+    padding: 0.7rem 1rem;
+    border-bottom: 2px solid #334155;
+}
+[data-testid="stChatMessage"] td {
+    padding: 0.6rem 1rem;
+    border-bottom: 1px solid #283548;
+    color: #E2E8F0 !important;
+}
+[data-testid="stChatMessage"] tr:nth-child(even) {
+    background-color: rgba(30, 41, 59, 0.6);
+}
+[data-testid="stChatMessage"] tr:hover {
+    background-color: rgba(59, 130, 246, 0.12);
+}
+
 /* Hide Streamlit branding */
 #MainMenu { visibility: hidden; }
 footer { visibility: hidden; }
