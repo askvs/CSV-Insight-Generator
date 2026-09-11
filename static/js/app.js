@@ -617,9 +617,9 @@
 
               const figure = c.figure;
               figure.layout = figure.layout || {};
-              figure.layout.paper_bgcolor = 'rgba(0,0,0,0)';
-              figure.layout.plot_bgcolor = 'rgba(15, 23, 42, 0.4)';
-              figure.layout.font = { family: 'Inter, sans-serif', color: '#CBD5E1', size: 11 };
+              figure.layout.paper_bgcolor = '#12141C';
+              figure.layout.plot_bgcolor = '#12141C';
+              figure.layout.font = { family: 'Inter, sans-serif', color: '#9CA3AF', size: 11 };
               figure.layout.margin = { l: 50, r: 25, t: 40, b: 50 };
 
               Plotly.newPlot(plotDiv.id, figure.data, figure.layout, {
