@@ -510,10 +510,13 @@
         <div class="msg-bubble">
           <!-- Live Reasoning / Sandbox Stepper -->
           <div class="live-stepper" id="stepper">
-            <div class="stepper-header">
+            <div class="stepper-header" id="stepperHeader" style="cursor: pointer;">
               <span id="stepperTitle">⚡ Initializing data intelligence runtime...</span>
-              <div class="stepper-spinner" id="stepperSpinner">
-                <span class="dot"></span><span class="dot"></span><span class="dot"></span>
+              <div class="stepper-controls" style="display: flex; align-items: center; gap: 6px;">
+                <div class="stepper-spinner" id="stepperSpinner">
+                  <span class="dot"></span><span class="dot"></span><span class="dot"></span>
+                </div>
+                <span class="stepper-toggle-icon" id="stepperToggleIcon" style="display:none; font-size: 0.72rem; color: var(--text-muted);">▼</span>
               </div>
             </div>
             <div class="stepper-log" id="stepperLog"></div>
@@ -533,16 +536,28 @@
     `;
 
     const stepper = card.querySelector('#stepper');
+    const stepperHeader = card.querySelector('#stepperHeader');
     const stepperTitle = card.querySelector('#stepperTitle');
     const stepperSpinner = card.querySelector('#stepperSpinner');
+    const stepperToggleIcon = card.querySelector('#stepperToggleIcon');
     const stepperLog = card.querySelector('#stepperLog');
     const reportContent = card.querySelector('#reportContent');
     const chartsWrapper = card.querySelector('#chartsWrapper');
     const codeAuditWrapper = card.querySelector('#codeAuditWrapper');
 
+    let logCount = 0;
+    stepperHeader.addEventListener('click', () => {
+      if (stepperToggleIcon.style.display !== 'none') {
+        const isHidden = stepperLog.style.display === 'none';
+        stepperLog.style.display = isHidden ? 'flex' : 'none';
+        stepperToggleIcon.textContent = isHidden ? '▲' : '▼';
+      }
+    });
+
     return {
       container: card,
       addLogEntry: (icon, text) => {
+        logCount++;
         const item = document.createElement('div');
         item.className = 'step-entry';
         item.innerHTML = `<span class="step-icon">${icon}</span><span>${escapeHtml(text)}</span>`;
@@ -552,100 +567,123 @@
       updateStatus: (titleText, type = 'info') => {
         stepperTitle.textContent = titleText;
       },
+      collapseStepper: () => {
+        stepperSpinner.style.display = 'none';
+        stepperToggleIcon.style.display = 'inline';
+        stepperTitle.textContent = `✅ Analysis complete (${logCount} execution steps) • Click to expand`;
+        stepperLog.style.display = 'none';
+      },
       finishStreaming: () => {
         stepperSpinner.style.display = 'none';
-        stepperTitle.textContent = '✅ Analysis & computation complete';
+        if (reportContent.style.display === 'block') {
+          stepperToggleIcon.style.display = 'inline';
+          stepperTitle.textContent = `✅ Analysis complete (${logCount} execution steps) • Click to expand`;
+          stepperLog.style.display = 'none';
+        } else {
+          stepperTitle.textContent = '✅ Analysis & computation complete';
+        }
       },
       renderReport: (markdownText) => {
         reportContent.style.display = 'block';
-        if (typeof marked !== 'undefined') {
-          reportContent.innerHTML = marked.parse(markdownText);
-        } else {
-          reportContent.textContent = markdownText;
+        try {
+          if (typeof marked !== 'undefined' && markdownText) {
+            reportContent.innerHTML = marked.parse(markdownText);
+          } else {
+            reportContent.textContent = markdownText || 'Analysis completed with findings.';
+          }
+        } catch (mErr) {
+          console.error('Markdown parse error:', mErr);
+          reportContent.textContent = markdownText || '';
         }
       },
       renderCharts: (charts) => {
         if (!charts || charts.length === 0) return;
         charts.forEach((c, idx) => {
-          const chartBox = document.createElement('div');
-          chartBox.className = 'chart-container';
+          try {
+            const chartBox = document.createElement('div');
+            chartBox.className = 'chart-container';
 
-          const chartHeader = document.createElement('div');
-          chartHeader.className = 'chart-header';
-          chartHeader.innerHTML = `<span>📊 Visual Breakdown ${idx + 1}</span><span class="badge-tag">Interactive Plotly / Canvas</span>`;
-          chartBox.appendChild(chartHeader);
+            const chartHeader = document.createElement('div');
+            chartHeader.className = 'chart-header';
+            chartHeader.innerHTML = `<span>📊 Visual Breakdown ${idx + 1}</span><span class="badge-tag">Interactive Plotly / Canvas</span>`;
+            chartBox.appendChild(chartHeader);
 
-          if (c.type === 'plotly' && c.figure && typeof Plotly !== 'undefined') {
-            const plotDiv = document.createElement('div');
-            plotDiv.className = 'plotly-embed';
-            plotDiv.id = `chart_${Date.now()}_${idx}`;
-            chartBox.appendChild(plotDiv);
-            chartsWrapper.appendChild(chartBox);
+            if (c.type === 'plotly' && c.figure && typeof Plotly !== 'undefined') {
+              const plotDiv = document.createElement('div');
+              plotDiv.className = 'plotly-embed';
+              plotDiv.id = `chart_${Date.now()}_${idx}`;
+              chartBox.appendChild(plotDiv);
+              chartsWrapper.appendChild(chartBox);
 
-            // Enhance Plotly layout for modern dark aesthetic
-            const figure = c.figure;
-            figure.layout = figure.layout || {};
-            figure.layout.paper_bgcolor = 'rgba(0,0,0,0)';
-            figure.layout.plot_bgcolor = 'rgba(15, 23, 42, 0.4)';
-            figure.layout.font = { family: 'Inter, sans-serif', color: '#CBD5E1', size: 11 };
-            figure.layout.margin = { l: 50, r: 25, t: 40, b: 50 };
+              const figure = c.figure;
+              figure.layout = figure.layout || {};
+              figure.layout.paper_bgcolor = 'rgba(0,0,0,0)';
+              figure.layout.plot_bgcolor = 'rgba(15, 23, 42, 0.4)';
+              figure.layout.font = { family: 'Inter, sans-serif', color: '#CBD5E1', size: 11 };
+              figure.layout.margin = { l: 50, r: 25, t: 40, b: 50 };
 
-            Plotly.newPlot(plotDiv.id, figure.data, figure.layout, {
-              responsive: true,
-              displayModeBar: true,
-              displaylogo: false,
-              modeBarButtonsToRemove: ['sendDataToCloud', 'hoverClosestCartesian', 'hoverCompareCartesian'],
-            });
-          } else if (c.type === 'image' && c.data) {
-            const img = document.createElement('img');
-            img.src = c.data;
-            img.className = 'chart-static-img';
-            chartBox.appendChild(img);
-            chartsWrapper.appendChild(chartBox);
+              Plotly.newPlot(plotDiv.id, figure.data, figure.layout, {
+                responsive: true,
+                displayModeBar: true,
+                displaylogo: false,
+                modeBarButtonsToRemove: ['sendDataToCloud', 'hoverClosestCartesian', 'hoverCompareCartesian'],
+              });
+            } else if (c.type === 'image' && c.data) {
+              const img = document.createElement('img');
+              img.src = c.data;
+              img.className = 'chart-static-img';
+              chartBox.appendChild(img);
+              chartsWrapper.appendChild(chartBox);
+            }
+          } catch (chartErr) {
+            console.error('Error rendering chart element:', chartErr);
           }
         });
       },
       renderCodeAudit: (codeSnippets) => {
         if (!codeSnippets || codeSnippets.length === 0) return;
-        const details = document.createElement('details');
-        details.className = 'code-audit-accordion';
-        
-        let snippetsHtml = codeSnippets.map((snip, idx) => {
-          let highlighted = escapeHtml(snip);
-          if (typeof hljs !== 'undefined') {
-            try {
-              highlighted = hljs.highlight(snip, { language: 'python' }).value;
-            } catch (e) {}
-          }
-          return `
-            <div class="code-snippet-box">
-              <button class="btn-copy-code" data-code="${encodeURIComponent(snip)}">Copy</button>
-              <pre><code class="language-python">${highlighted}</code></pre>
-            </div>
+        try {
+          const details = document.createElement('details');
+          details.className = 'code-audit-accordion';
+          
+          let snippetsHtml = codeSnippets.map((snip, idx) => {
+            let highlighted = escapeHtml(snip);
+            if (typeof hljs !== 'undefined') {
+              try {
+                highlighted = hljs.highlight(snip, { language: 'python' }).value;
+              } catch (e) {}
+            }
+            return `
+              <div class="code-snippet-box">
+                <button class="btn-copy-code" data-code="${encodeURIComponent(snip)}">Copy</button>
+                <pre><code class="language-python">${highlighted}</code></pre>
+              </div>
+            `;
+          }).join('');
+
+          details.innerHTML = `
+            <summary>
+              <span>⚙️ Executed Python Scripts (${codeSnippets.length} step${codeSnippets.length !== 1 ? 's' : ''})</span>
+              <span style="font-size:0.68rem; color:var(--text-muted);">Empirical Sandbox Audit</span>
+            </summary>
+            ${snippetsHtml}
           `;
-        }).join('');
 
-        details.innerHTML = `
-          <summary>
-            <span>⚙️ Executed Python Scripts (${codeSnippets.length} step${codeSnippets.length !== 1 ? 's' : ''})</span>
-            <span style="font-size:0.68rem; color:var(--text-muted);">Empirical Sandbox Audit</span>
-          </summary>
-          ${snippetsHtml}
-        `;
-
-        // Copy button listeners
-        details.querySelectorAll('.btn-copy-code').forEach(btn => {
-          btn.addEventListener('click', (e) => {
-            e.stopPropagation();
-            const code = decodeURIComponent(btn.getAttribute('data-code'));
-            navigator.clipboard.writeText(code).then(() => {
-              btn.textContent = 'Copied!';
-              setTimeout(() => { btn.textContent = 'Copy'; }, 2000);
+          details.querySelectorAll('.btn-copy-code').forEach(btn => {
+            btn.addEventListener('click', (e) => {
+              e.stopPropagation();
+              const code = decodeURIComponent(btn.getAttribute('data-code'));
+              navigator.clipboard.writeText(code).then(() => {
+                btn.textContent = 'Copied!';
+                setTimeout(() => { btn.textContent = 'Copy'; }, 2000);
+              });
             });
           });
-        });
 
-        codeAuditWrapper.appendChild(details);
+          codeAuditWrapper.appendChild(details);
+        } catch (codeErr) {
+          console.error('Error rendering code audit:', codeErr);
+        }
       }
     };
   }
@@ -674,6 +712,7 @@
         uiCard.addLogEntry('⚠️', `Step ${data.step} error encountered, auto-correcting: ${data.error || 'Syntax error'}`);
       }
     } else if (data.type === 'final_answer') {
+      uiCard.collapseStepper();
       uiCard.renderReport(data.answer);
       if (data.charts && data.charts.length > 0) {
         uiCard.renderCharts(data.charts);
@@ -681,6 +720,7 @@
       if (data.code && data.code.length > 0) {
         uiCard.renderCodeAudit(data.code);
       }
+      scrollToBottom();
     } else if (data.type === 'error') {
       uiCard.updateStatus(`❌ ${data.error}`, 'error');
       uiCard.addLogEntry('❌', data.error);

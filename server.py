@@ -112,22 +112,56 @@ class NamedBytesIO(io.BytesIO):
 # ────────────────────────────────────────────────────────────
 # Helper Functions
 # ────────────────────────────────────────────────────────────
+def _safe_json_dumps(obj: Any) -> str:
+    """Robust JSON serializer that handles NumPy ndarrays, pandas Series/Timestamp, and unknown objects."""
+
+    def _default_encoder(o):
+        if hasattr(o, "tolist"):
+            return o.tolist()
+        if hasattr(o, "to_dict"):
+            return o.to_dict()
+        if hasattr(o, "isoformat"):
+            return o.isoformat()
+        if isinstance(o, (pd.Timestamp, datetime)):
+            return o.strftime("%Y-%m-%d %H:%M:%S")
+        if hasattr(o, "item") and callable(o.item):
+            try:
+                return o.item()
+            except Exception:
+                pass
+        return str(o)
+
+    return json.dumps(obj, default=_default_encoder)
+
+
 def _serialize_chart_for_client(chart_obj: Any) -> dict[str, Any]:
     """Serializes a chart object (Plotly Figure or PNG bytes) to client-friendly JSON."""
-    if hasattr(chart_obj, "to_dict") and hasattr(chart_obj, "data"):
-        try:
-            fig_dict = chart_obj.to_dict()
-            return {"type": "plotly", "figure": fig_dict}
-        except Exception:
-            pass
-
+    # 1. Plotly Figure via to_json() (safely encodes NumPy arrays, dates, and series)
     if hasattr(chart_obj, "to_json"):
         try:
-            fig_json = json.loads(chart_obj.to_json())
-            return {"type": "plotly", "figure": fig_json}
+            fig_json_dict = json.loads(chart_obj.to_json())
+            return {"type": "plotly", "figure": fig_json_dict}
         except Exception:
             pass
 
+    if pio is not None and hasattr(chart_obj, "data"):
+        try:
+            fig_json_dict = json.loads(pio.to_json(chart_obj))
+            return {"type": "plotly", "figure": fig_json_dict}
+        except Exception:
+            pass
+
+    # 2. Fallback Plotly Figure via to_dict()
+    if hasattr(chart_obj, "to_dict") and hasattr(chart_obj, "data"):
+        try:
+            raw_dict = chart_obj.to_dict()
+            # Cleanse ndarrays in dict via safe serialization roundtrip
+            clean_dict = json.loads(_safe_json_dumps(raw_dict))
+            return {"type": "plotly", "figure": clean_dict}
+        except Exception:
+            pass
+
+    # 3. Matplotlib PNG bytes
     if isinstance(chart_obj, bytes):
         b64 = base64.b64encode(chart_obj).decode("utf-8")
         return {"type": "image", "data": f"data:image/png;base64,{b64}"}
@@ -453,9 +487,23 @@ def chat_stream():
             try:
                 item = event_queue.get(timeout=45)
                 if item is None:
-                    yield f"data: {json.dumps({'type': 'done'})}\n\n"
+                    yield f"data: {_safe_json_dumps({'type': 'done'})}\n\n"
                     break
-                yield f"data: {json.dumps(item)}\n\n"
+                try:
+                    payload = _safe_json_dumps(item)
+                    yield f"data: {payload}\n\n"
+                except Exception as ser_err:
+                    print(f"Error serializing SSE event: {ser_err}")
+                    if isinstance(item, dict) and item.get("type") == "final_answer":
+                        safe_item = {
+                            "type": "final_answer",
+                            "answer": item.get("answer", ""),
+                            "charts": [],
+                            "code": item.get("code", []),
+                        }
+                        yield f"data: {_safe_json_dumps(safe_item)}\n\n"
+                    else:
+                        yield f"data: {_safe_json_dumps({'type': 'error', 'error': 'Serialization error'})}\n\n"
             except queue.Empty:
                 yield ": keepalive\n\n"
 
