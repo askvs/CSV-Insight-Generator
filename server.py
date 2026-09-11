@@ -13,6 +13,7 @@ Provides REST APIs and Server-Sent Events (SSE) for:
 import base64
 import io
 import json
+import math
 import os
 import pickle
 import queue
@@ -38,12 +39,17 @@ try:
 except ImportError:
     pass
 
+import numpy as np
 import pandas as pd
 from flask import Flask, Response, jsonify, render_template, request, send_file
 
 try:
+    import plotly.express as px
+    import plotly.graph_objects as go
     import plotly.io as pio
 except ImportError:
+    px = None
+    go = None
     pio = None
 
 from src.agent import CSVInsightAgent
@@ -52,7 +58,7 @@ from src.profiler import (
     load_multiple_files,
     profile_datasets,
 )
-from src.reporter import generate_pdf_report
+from src.reporter import _generate_fallback_chart, generate_pdf_report
 from src.sandbox import create_namespace
 
 app = Flask(__name__, template_folder="templates", static_folder="static")
@@ -82,6 +88,19 @@ def save_session(session_id: str) -> None:
         if not sess:
             return
 
+        # Ensure raw_charts are safe for pickle by converting any live Matplotlib figures to PNG bytes
+        safe_raw_charts = []
+        for rc in sess.get("raw_charts", []):
+            if hasattr(rc, "savefig") and callable(rc.savefig):
+                try:
+                    buf = io.BytesIO()
+                    rc.savefig(buf, format="png", bbox_inches="tight", dpi=100)
+                    safe_raw_charts.append(buf.getvalue())
+                except Exception:
+                    pass
+            else:
+                safe_raw_charts.append(rc)
+
         data_to_save = {
             "dfs": sess.get("dfs", {}),
             "df": sess.get("df"),
@@ -90,7 +109,7 @@ def save_session(session_id: str) -> None:
             "profile": sess.get("profile"),
             "history": sess.get("history"),
             "chat_log": sess.get("chat_log", []),
-            "raw_charts": sess.get("raw_charts", []),
+            "raw_charts": safe_raw_charts,
             "is_truncated": sess.get("is_truncated", False),
             "created_at": sess.get("created_at", time.time()),
             "last_accessed": sess.get("last_accessed", time.time()),
@@ -183,61 +202,223 @@ class NamedBytesIO(io.BytesIO):
 # ────────────────────────────────────────────────────────────
 # Helper Functions
 # ────────────────────────────────────────────────────────────
+def _clean_plotly_dict(obj: Any) -> Any:
+    """
+    Recursively cleans a Plotly dictionary or nested data structure:
+    1. Decodes binary-encoded NumPy buffers ({'dtype': '...', 'bdata': '...'})
+       into standard JSON-serializable Python lists so Plotly.js can render them.
+    2. Converts NaNs and Infs to None so standard JSON.parse in JavaScript succeeds.
+    3. Converts NumPy scalar values and arrays to Python native types.
+    """
+    if isinstance(obj, dict):
+        if "bdata" in obj and "dtype" in obj:
+            try:
+                raw_bytes = base64.b64decode(obj["bdata"])
+                dtype_str = obj.get("dtype")
+                arr = np.frombuffer(raw_bytes, dtype=dtype_str)
+                shape = obj.get("shape")
+                if shape:
+                    arr = arr.reshape(shape)
+                return _clean_plotly_dict(arr.tolist())
+            except Exception:
+                return []
+        return {k: _clean_plotly_dict(v) for k, v in obj.items()}
+    elif isinstance(obj, (list, tuple)):
+        return [_clean_plotly_dict(v) for v in obj]
+    elif isinstance(obj, float):
+        if math.isnan(obj) or math.isinf(obj):
+            return None
+        return obj
+    elif hasattr(obj, "tolist") and callable(obj.tolist):
+        return _clean_plotly_dict(obj.tolist())
+    elif hasattr(obj, "item") and callable(obj.item):
+        try:
+            val = obj.item()
+            if isinstance(val, float) and (math.isnan(val) or math.isinf(val)):
+                return None
+            return val
+        except Exception:
+            return str(obj)
+    return obj
+
+
 def _safe_json_dumps(obj: Any) -> str:
-    """Robust JSON serializer that handles NumPy ndarrays, pandas Series/Timestamp, and unknown objects."""
+    """Robust JSON serializer that handles NumPy ndarrays, pandas Series/Timestamp, NaNs, and unknown objects."""
+    cleaned = _clean_plotly_dict(obj)
 
     def _default_encoder(o):
-        if hasattr(o, "tolist"):
+        if hasattr(o, "tolist") and callable(o.tolist):
             return o.tolist()
-        if hasattr(o, "to_dict"):
+        if hasattr(o, "to_dict") and callable(o.to_dict):
             return o.to_dict()
-        if hasattr(o, "isoformat"):
+        if hasattr(o, "isoformat") and callable(o.isoformat):
             return o.isoformat()
         if isinstance(o, (pd.Timestamp, datetime)):
             return o.strftime("%Y-%m-%d %H:%M:%S")
         if hasattr(o, "item") and callable(o.item):
             try:
-                return o.item()
+                val = o.item()
+                if isinstance(val, float) and (math.isnan(val) or math.isinf(val)):
+                    return None
+                return val
             except Exception:
                 pass
         return str(o)
 
-    return json.dumps(obj, default=_default_encoder)
+    try:
+        return json.dumps(cleaned, default=_default_encoder, allow_nan=False)
+    except Exception:
+        return json.dumps(cleaned, default=_default_encoder)
 
 
 def _serialize_chart_for_client(chart_obj: Any) -> dict[str, Any]:
-    """Serializes a chart object (Plotly Figure or PNG bytes) to client-friendly JSON."""
-    # 1. Plotly Figure via to_json() (safely encodes NumPy arrays, dates, and series)
-    if hasattr(chart_obj, "to_json"):
+    """Serializes a chart object (Plotly Figure, Matplotlib Figure, or PNG bytes) to client-friendly JSON."""
+    if chart_obj is None:
+        return {"type": "unknown"}
+
+    # 1. Matplotlib Figure instance (has savefig)
+    if hasattr(chart_obj, "savefig") and callable(chart_obj.savefig):
         try:
-            fig_json_dict = json.loads(chart_obj.to_json())
-            return {"type": "plotly", "figure": fig_json_dict}
+            buf = io.BytesIO()
+            chart_obj.savefig(buf, format="png", bbox_inches="tight", dpi=100)
+            b64 = base64.b64encode(buf.getvalue()).decode("utf-8")
+            return {"type": "image", "data": f"data:image/png;base64,{b64}"}
         except Exception:
             pass
 
-    if pio is not None and hasattr(chart_obj, "data"):
-        try:
-            fig_json_dict = json.loads(pio.to_json(chart_obj))
-            return {"type": "plotly", "figure": fig_json_dict}
-        except Exception:
-            pass
-
-    # 2. Fallback Plotly Figure via to_dict()
-    if hasattr(chart_obj, "to_dict") and hasattr(chart_obj, "data"):
-        try:
-            raw_dict = chart_obj.to_dict()
-            # Cleanse ndarrays in dict via safe serialization roundtrip
-            clean_dict = json.loads(_safe_json_dumps(raw_dict))
-            return {"type": "plotly", "figure": clean_dict}
-        except Exception:
-            pass
-
-    # 3. Matplotlib PNG bytes
+    # 2. Raw PNG image bytes
     if isinstance(chart_obj, bytes):
         b64 = base64.b64encode(chart_obj).decode("utf-8")
         return {"type": "image", "data": f"data:image/png;base64,{b64}"}
 
+    # 3. String that is already a data URI or image URL
+    if isinstance(chart_obj, str) and (chart_obj.startswith("data:image/") or chart_obj.startswith("http")):
+        return {"type": "image", "data": chart_obj}
+
+    # 4. Plotly Figure
+    clean_dict = None
+    # Try to_dict() first with bdata cleaning
+    if hasattr(chart_obj, "to_dict") and callable(chart_obj.to_dict):
+        try:
+            raw_dict = chart_obj.to_dict()
+            clean_dict = _clean_plotly_dict(raw_dict)
+        except Exception:
+            clean_dict = None
+
+    # Try to_json()
+    if clean_dict is None and hasattr(chart_obj, "to_json") and callable(chart_obj.to_json):
+        try:
+            parsed = json.loads(chart_obj.to_json())
+            clean_dict = _clean_plotly_dict(parsed)
+        except Exception:
+            clean_dict = None
+
+    # Try pio.to_json()
+    if clean_dict is None and pio is not None and hasattr(chart_obj, "data"):
+        try:
+            parsed = json.loads(pio.to_json(chart_obj))
+            clean_dict = _clean_plotly_dict(parsed)
+        except Exception:
+            clean_dict = None
+
+    # If already a dict
+    if clean_dict is None and isinstance(chart_obj, dict):
+        if chart_obj.get("type") in ("plotly", "image"):
+            return _clean_plotly_dict(chart_obj)
+        if "data" in chart_obj:
+            clean_dict = _clean_plotly_dict(chart_obj)
+
+    if clean_dict is not None:
+        # Check if pre-cached PNG bytes exist or can be rendered
+        png_b64 = None
+        if hasattr(chart_obj, "_png_bytes") and getattr(chart_obj, "_png_bytes"):
+            png_b64 = base64.b64encode(getattr(chart_obj, "_png_bytes")).decode("utf-8")
+        elif hasattr(chart_obj, "to_image") and callable(chart_obj.to_image):
+            try:
+                img_bytes = chart_obj.to_image(format="png", width=900, height=450)
+                if img_bytes:
+                    png_b64 = base64.b64encode(img_bytes).decode("utf-8")
+            except Exception:
+                pass
+
+        result = {"type": "plotly", "figure": clean_dict}
+        if png_b64:
+            result["image"] = f"data:image/png;base64,{png_b64}"
+        return result
+
+    # 5. Last fallback: check _png_bytes or to_image on the object
+    if hasattr(chart_obj, "_png_bytes") and getattr(chart_obj, "_png_bytes"):
+        b64 = base64.b64encode(getattr(chart_obj, "_png_bytes")).decode("utf-8")
+        return {"type": "image", "data": f"data:image/png;base64,{b64}"}
+
+    if hasattr(chart_obj, "to_image") and callable(chart_obj.to_image):
+        try:
+            img_bytes = chart_obj.to_image(format="png", width=900, height=450)
+            if img_bytes:
+                b64 = base64.b64encode(img_bytes).decode("utf-8")
+                return {"type": "image", "data": f"data:image/png;base64,{b64}"}
+        except Exception:
+            pass
+
     return {"type": "unknown"}
+
+
+def _create_fallback_visualization(df: pd.DataFrame | None) -> Any:
+    """Creates a high-clarity empirical visualization (Plotly or Matplotlib) when no turn chart was generated."""
+    if df is None or len(df) == 0:
+        return None
+    try:
+        if px is not None:
+            num_cols = df.select_dtypes(include=["number"]).columns.tolist()
+            cat_cols = [
+                c for c in df.select_dtypes(include=["object", "category", "string"]).columns
+                if not str(c).lower().endswith("id") and df[c].nunique() > 1
+            ]
+
+            if cat_cols and num_cols:
+                cat = cat_cols[0]
+                num = num_cols[0]
+                top_cats = df[cat].value_counts().head(8).index
+                sub = df[df[cat].isin(top_cats)]
+                avg = sub.groupby(cat, as_index=False)[num].mean().sort_values(by=num, ascending=False)
+                fig = px.bar(
+                    avg,
+                    x=cat,
+                    y=num,
+                    title=f"Empirical Baseline: Average {num} by {cat}",
+                    color=num,
+                    color_continuous_scale="Blues",
+                )
+                try:
+                    fig._png_bytes = fig.to_image(format="png", width=900, height=450)
+                except Exception:
+                    pass
+                return fig
+            elif len(num_cols) >= 2:
+                subset_cols = num_cols[:5]
+                means = df[subset_cols].mean().reset_index()
+                means.columns = ["Metric", "Mean_Value"]
+                fig = px.bar(
+                    means,
+                    x="Metric",
+                    y="Mean_Value",
+                    title="Dataset Numeric Baseline Averages",
+                    color="Mean_Value",
+                    color_continuous_scale="Blues",
+                )
+                try:
+                    fig._png_bytes = fig.to_image(format="png", width=900, height=450)
+                except Exception:
+                    pass
+                return fig
+    except Exception:
+        pass
+
+    # Matplotlib PNG bytes fallback
+    try:
+        return _generate_fallback_chart(df)
+    except Exception:
+        return None
 
 
 def _is_substantive_report(content: str) -> bool:
@@ -275,13 +456,21 @@ def get_session_state():
             "memory_mb": mem_mb,
         })
 
-    # Return client-safe chat log
+    # Return client-safe chat log with cleaned charts
     client_chat_log = []
     for entry in sess.get("chat_log", []):
+        raw_cc = entry.get("client_charts", [])
+        cleaned_cc = []
+        if raw_cc:
+            for c in raw_cc:
+                clean_item = _clean_plotly_dict(c)
+                if isinstance(clean_item, dict) and clean_item.get("type") != "unknown":
+                    cleaned_cc.append(clean_item)
+
         client_chat_log.append({
             "role": entry.get("role"),
             "content": entry.get("content"),
-            "charts": entry.get("client_charts", []),
+            "charts": cleaned_cc,
             "code": entry.get("code", []),
             "timestamp": entry.get("timestamp", ""),
         })
@@ -351,7 +540,10 @@ def upload_datasets():
         for name, d in dfs.items():
             mem_mb = round(d.memory_usage(deep=True).sum() / 1_048_576, 2)
             # Sample preview up to 50 rows
-            sample_df = d.head(50).fillna("")
+            sample_slice = d.head(50).copy()
+            for col in sample_slice.select_dtypes(include=["category"]).columns:
+                sample_slice[col] = sample_slice[col].astype(str)
+            sample_df = sample_slice.fillna("")
             tables_summary.append({
                 "name": name,
                 "rows": len(d),
@@ -373,6 +565,61 @@ def upload_datasets():
 
     except Exception as e:
         return jsonify({"error": f"Failed to load datasets: {e!s}"}), 500
+
+
+@app.route("/api/dataset/<path:table_name>", methods=["DELETE"])
+def delete_dataset(table_name: str):
+    """Deletes a specific dataset table from the session."""
+    session_id = get_session_id_from_request()
+    sess = get_session(session_id)
+
+    dfs = sess.get("dfs") or {}
+    if table_name not in dfs:
+        return jsonify({"error": f"Table '{table_name}' not found."}), 404
+
+    with SESSION_LOCK:
+        del dfs[table_name]
+        if not dfs:
+            # All tables deleted - full clear
+            sess["dfs"] = {}
+            sess["df"] = None
+            sess["dataset_names"] = []
+            sess["dataset_name"] = ""
+            sess["profile"] = {}
+            sess["namespace"] = None
+            sess["is_truncated"] = False
+        else:
+            sess["dfs"] = dfs
+            sess["df"] = next(iter(dfs.values()))
+            sess["dataset_names"] = list(dfs.keys())
+            sess["dataset_name"] = (
+                ", ".join(dfs.keys()) if len(dfs) > 1 else next(iter(dfs.keys()))
+            )
+            # Re-profile remaining tables
+            sess["profile"] = profile_datasets(dfs, {})
+            sess["namespace"] = create_namespace(dfs)
+
+    save_session(session_id)
+
+    # Summarize remaining tables
+    tables_summary = []
+    for name, d in dfs.items():
+        mem_mb = round(d.memory_usage(deep=True).sum() / 1_048_576, 2)
+        tables_summary.append({
+            "name": name,
+            "rows": len(d),
+            "columns": len(d.columns),
+            "columns_list": list(d.columns),
+            "memory_mb": mem_mb,
+        })
+
+    return jsonify({
+        "success": True,
+        "remaining_count": len(dfs),
+        "tables": tables_summary,
+        "profile": sess.get("profile", {}),
+        "is_multi_dataset": sess.get("profile", {}).get("is_multi_dataset", len(dfs) > 1) if dfs else False,
+    })
 
 
 @app.route("/api/table/<path:table_name>", methods=["GET"])
@@ -401,7 +648,10 @@ def get_table_data(table_name: str):
 
     start_idx = (page - 1) * page_size
     end_idx = start_idx + page_size
-    page_slice = filtered_df.iloc[start_idx:end_idx].fillna("")
+    page_slice = filtered_df.iloc[start_idx:end_idx].copy()
+    for col in page_slice.select_dtypes(include=["category"]).columns:
+        page_slice[col] = page_slice[col].astype(str)
+    page_slice = page_slice.fillna("")
 
     return jsonify({
         "table_name": table_name,
@@ -520,7 +770,20 @@ def chat_stream():
             sess["history"] = result.get("history")
 
             raw_charts = result.get("charts", [])
+
+            # Fallback visualization: If no chart was generated during this turn, generate an empirical
+            # exploratory visualization from the dataset so the web app and PDF report maintain 100% parity!
+            if not raw_charts:
+                target_df = sess.get("df")
+                if target_df is None and sess.get("dfs"):
+                    target_df = next(iter(sess["dfs"].values()), None)
+                if target_df is not None and len(target_df) > 0:
+                    fb_chart = _create_fallback_visualization(target_df)
+                    if fb_chart is not None:
+                        raw_charts = [fb_chart]
+
             client_charts = [_serialize_chart_for_client(c) for c in raw_charts]
+            client_charts = [c for c in client_charts if c.get("type") != "unknown"]
             sess["raw_charts"].extend(raw_charts)
 
             agent_entry = {

@@ -41,7 +41,6 @@
       <div class="brand-titles">
         <div class="brand-name-wrap">
           <h1 class="brand-title">CSV & Multi-Dataset Insight Agent</h1>
-          <span class="badge-version">v2.0 Web Studio</span>
         </div>
         <p class="brand-sub">Autonomous Python Sandbox Execution • Interactive Plotly Analytics • Board-Ready Briefings</p>
       </div>
@@ -106,6 +105,7 @@
           <span class="badge-tag">Multi-Format</span>
         </div>
 
+        <!-- Full-sized drop zone (shown when no files uploaded) -->
         <div class="drop-zone" id="dropZone">
           <input type="file" id="fileInput" multiple accept=".csv,.xlsx,.xls,.parquet,.json" class="file-input-hidden">
           <div class="drop-zone-content">
@@ -124,6 +124,20 @@
               <span class="fmt-badge">JSON</span>
             </div>
           </div>
+        </div>
+
+        <!-- Compact file list bar (shown when files are uploaded) -->
+        <div class="uploaded-compact-bar" id="uploadedCompactBar" style="display: none;">
+          <div class="uploaded-files-list" id="uploadedFilesList">
+            <!-- Dynamically populated with loaded files and delete buttons -->
+          </div>
+          <button type="button" class="btn-compact-add" id="btnCompactAdd" title="Upload additional or replacement datasets">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+              <line x1="12" y1="5" x2="12" y2="19"/>
+              <line x1="5" y1="12" x2="19" y2="12"/>
+            </svg>
+            <span>Add File</span>
+          </button>
         </div>
 
         <div class="upload-progress-bar" id="uploadProgressBar" style="display: none;">
@@ -269,6 +283,23 @@
 
       <!-- Sticky Chat Input Bar -->
       <div class="input-dock" id="inputDock">
+        <!-- Floating Agent Working Indicator Banner -->
+        <div class="agent-working-banner" id="agentWorkingBanner" style="display: none;">
+          <div class="working-pill">
+            <span class="working-radar">
+              <span class="radar-circle"></span>
+              <span class="radar-dot"></span>
+            </span>
+            <span class="working-text" id="workingBannerText">Agent executing Python analytics sandbox...</span>
+            <div class="working-bars">
+              <span class="bar bar-1"></span>
+              <span class="bar bar-2"></span>
+              <span class="bar bar-3"></span>
+              <span class="bar bar-4"></span>
+            </div>
+          </div>
+        </div>
+
         <form class="chat-input-form" id="chatForm">
           <div class="input-wrapper">
             <textarea

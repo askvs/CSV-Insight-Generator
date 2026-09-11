@@ -50,6 +50,9 @@
   const uploadProgressBar = document.getElementById('uploadProgressBar');
   const progressFill = document.getElementById('progressFill');
   const progressLabel = document.getElementById('progressLabel');
+  const uploadedCompactBar = document.getElementById('uploadedCompactBar');
+  const uploadedFilesList = document.getElementById('uploadedFilesList');
+  const btnCompactAdd = document.getElementById('btnCompactAdd');
 
   const metricsCard = document.getElementById('metricsCard');
   const metricsGrid = document.getElementById('metricsGrid');
@@ -77,6 +80,48 @@
   const btnExportNb = document.getElementById('btnExportNb');
   const btnResetSession = document.getElementById('btnResetSession');
   const toastContainer = document.getElementById('toastContainer');
+  const inputWrapper = document.querySelector('.input-wrapper');
+  const agentConnectionStatus = document.getElementById('agentConnectionStatus');
+  const agentWorkingBanner = document.getElementById('agentWorkingBanner');
+  const workingBannerText = document.getElementById('workingBannerText');
+
+  // ────────────────────────────────────────────────────────────
+  // Agent Working State UI Controller
+  // ────────────────────────────────────────────────────────────
+  function setAgentWorkingUI(isWorking, statusMessage = 'Agent executing Python analytics sandbox...') {
+    isAgentAnalyzing = isWorking;
+    btnSend.disabled = isWorking;
+
+    if (isWorking) {
+      btnSend.classList.add('is-loading');
+      btnSend.innerHTML = '<span class="btn-spinner"></span>';
+      if (inputWrapper) inputWrapper.classList.add('is-working');
+      if (agentWorkingBanner) {
+        agentWorkingBanner.style.display = 'flex';
+        if (workingBannerText) workingBannerText.textContent = statusMessage;
+      }
+      if (agentConnectionStatus) {
+        agentConnectionStatus.classList.add('is-busy');
+        const pillText = agentConnectionStatus.querySelector('.pill-text');
+        if (pillText) pillText.textContent = 'Agent Computing...';
+      }
+    } else {
+      btnSend.classList.remove('is-loading');
+      btnSend.innerHTML = `
+        <svg class="send-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <line x1="22" y1="2" x2="11" y2="13"/>
+          <polygon points="22 2 15 22 11 13 2 9 22 2"/>
+        </svg>
+      `;
+      if (inputWrapper) inputWrapper.classList.remove('is-working');
+      if (agentWorkingBanner) agentWorkingBanner.style.display = 'none';
+      if (agentConnectionStatus) {
+        agentConnectionStatus.classList.remove('is-busy');
+        const pillText = agentConnectionStatus.querySelector('.pill-text');
+        if (pillText) pillText.textContent = 'Groq AI Active';
+      }
+    }
+  }
 
   // ────────────────────────────────────────────────────────────
   // Toast Notifications
@@ -114,6 +159,7 @@
   // Initialize Session on Load
   // ────────────────────────────────────────────────────────────
   async function initSession() {
+    setAgentWorkingUI(false);
     try {
       const res = await apiFetch('/api/session');
       if (!res.ok) return;
@@ -121,10 +167,13 @@
 
       if (data.loaded && data.tables && data.tables.length > 0) {
         currentDatasets = data.tables;
+        renderUploadedFileList(data.tables);
         renderTelemetry(data.profile, data.tables, data.is_multi_dataset);
         renderTableTabs(data.tables);
         loadTableData(data.tables[0].name, 1);
         enableExportButtons(true);
+      } else {
+        renderUploadedFileList([]);
       }
 
       if (data.chat_log && data.chat_log.length > 0) {
@@ -145,11 +194,13 @@
       }
     } catch (err) {
       console.warn('Session init warning:', err);
+    } finally {
+      setAgentWorkingUI(false);
     }
   }
 
   // ────────────────────────────────────────────────────────────
-  // Dataset Ingestion (Drag & Drop and File Picker)
+  // Dataset Ingestion (Drag & Drop, Compact Bar, File Picker)
   // ────────────────────────────────────────────────────────────
   ['dragenter', 'dragover'].forEach(eventName => {
     dropZone.addEventListener(eventName, (e) => {
@@ -180,6 +231,111 @@
     }
   });
 
+  dropZone.addEventListener('click', (e) => {
+    if (e.target !== fileInput) {
+      fileInput.click();
+    }
+  });
+
+  if (btnCompactAdd) {
+    btnCompactAdd.addEventListener('click', () => {
+      fileInput.click();
+    });
+  }
+
+  function renderUploadedFileList(tables) {
+    if (!tables || tables.length === 0) {
+      // Show full drop zone, hide compact bar
+      if (dropZone) dropZone.style.display = '';
+      if (uploadedCompactBar) uploadedCompactBar.style.display = 'none';
+      if (uploadedFilesList) uploadedFilesList.innerHTML = '';
+      return;
+    }
+
+    // Hide large drop zone, show minimized uploaded file area
+    if (dropZone) dropZone.style.display = 'none';
+    if (uploadedCompactBar) uploadedCompactBar.style.display = 'flex';
+    if (!uploadedFilesList) return;
+
+    uploadedFilesList.innerHTML = '';
+    tables.forEach(t => {
+      const item = document.createElement('div');
+      item.className = 'uploaded-file-item';
+
+      const rowLabel = `${(t.rows || 0).toLocaleString()} rows`;
+      const memLabel = t.memory_mb ? `${t.memory_mb} MB` : '';
+      const metaText = [rowLabel, memLabel].filter(Boolean).join(' • ');
+
+      item.innerHTML = `
+        <div class="uploaded-file-left" title="${t.name}">
+          <svg class="uploaded-file-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+            <polyline points="14 2 14 8 20 8"/>
+            <line x1="16" y1="13" x2="8" y2="13"/>
+            <line x1="16" y1="17" x2="8" y2="17"/>
+            <polyline points="10 9 9 9 8 9"/>
+          </svg>
+          <span class="uploaded-file-name">${t.name}</span>
+          <span class="uploaded-file-meta">${metaText}</span>
+        </div>
+        <div class="uploaded-file-actions">
+          <button type="button" class="btn-file-delete" data-filename="${t.name}" title="Remove ${t.name}">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <polyline points="3 6 5 6 21 6"/>
+              <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
+              <line x1="10" y1="11" x2="10" y2="17"/>
+              <line x1="14" y1="11" x2="14" y2="17"/>
+            </svg>
+          </button>
+        </div>
+      `;
+
+      const deleteBtn = item.querySelector('.btn-file-delete');
+      if (deleteBtn) {
+        deleteBtn.addEventListener('click', (ev) => {
+          ev.stopPropagation();
+          handleFileDelete(t.name);
+        });
+      }
+
+      uploadedFilesList.appendChild(item);
+    });
+  }
+
+  async function handleFileDelete(tableName) {
+    if (!confirm(`Are you sure you want to remove "${tableName}"?`)) {
+      return;
+    }
+
+    try {
+      const res = await apiFetch(`/api/dataset/${encodeURIComponent(tableName)}`, {
+        method: 'DELETE',
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.error || 'Failed to delete dataset.');
+      }
+
+      showToast(`Removed "${tableName}"`, 'info');
+      currentDatasets = data.tables || [];
+
+      if (currentDatasets.length > 0) {
+        renderUploadedFileList(currentDatasets);
+        renderTelemetry(data.profile, currentDatasets, data.is_multi_dataset);
+        renderTableTabs(currentDatasets);
+        loadTableData(currentDatasets[0].name, 1);
+      } else {
+        // Zero datasets remaining: restore dropzone, hide tables & metrics
+        renderUploadedFileList([]);
+        metricsCard.style.display = 'none';
+        tablePreviewCard.style.display = 'none';
+        enableExportButtons(false);
+      }
+    } catch (err) {
+      showToast(err.message, 'error');
+    }
+  }
+
   async function handleFileUpload(files) {
     const formData = new FormData();
     for (let i = 0; i < files.length; i++) {
@@ -203,6 +359,7 @@
       showToast(`Successfully loaded ${data.tables.length} dataset(s)!`, 'success');
 
       currentDatasets = data.tables;
+      renderUploadedFileList(data.tables);
       renderTelemetry(data.profile, data.tables, data.is_multi_dataset);
       renderTableTabs(data.tables);
       loadTableData(data.tables[0].name, 1);
@@ -430,8 +587,7 @@
     chatTimeline.appendChild(agentMsgCard.container);
     scrollToBottom();
 
-    isAgentAnalyzing = true;
-    btnSend.disabled = true;
+    setAgentWorkingUI(true, '⚡ Initializing data intelligence runtime...');
 
     try {
       const response = await apiFetch('/api/chat', {
@@ -466,6 +622,12 @@
             try {
               const eventData = JSON.parse(jsonStr);
               handleStreamEvent(eventData, agentMsgCard);
+              if (eventData.type === 'final_answer' || eventData.type === 'done' || eventData.type === 'error') {
+                setAgentWorkingUI(false);
+              }
+              if (eventData.type === 'done') {
+                break;
+              }
             } catch (jsonErr) {
               console.warn('Error parsing SSE event JSON:', jsonErr, jsonStr);
             }
@@ -477,8 +639,7 @@
       agentMsgCard.updateStatus(`❌ ${err.message}`, 'error');
       showToast(err.message, 'error');
     } finally {
-      isAgentAnalyzing = false;
-      btnSend.disabled = false;
+      setAgentWorkingUI(false);
       agentMsgCard.finishStreaming();
       enableExportButtons(true);
       scrollToBottom();
@@ -503,24 +664,47 @@
 
   function createAgentStreamingCard(timestamp) {
     const card = document.createElement('div');
-    card.className = 'chat-msg agent';
+    card.className = 'chat-msg agent is-working';
 
     card.innerHTML = `
-      <div class="msg-avatar">📊</div>
+      <div class="msg-avatar">
+        <span class="avatar-icon">📊</span>
+      </div>
       <div class="msg-body" style="width: 100%;">
         <div class="msg-bubble">
           <!-- Live Reasoning / Sandbox Stepper -->
-          <div class="live-stepper" id="stepper">
+          <div class="live-stepper is-working" id="stepper">
+            <div class="stepper-scanline"></div>
             <div class="stepper-header" id="stepperHeader" style="cursor: pointer;">
-              <span id="stepperTitle">⚡ Initializing data intelligence runtime...</span>
-              <div class="stepper-controls" style="display: flex; align-items: center; gap: 6px;">
+              <div class="stepper-header-left">
+                <span class="stepper-beacon">
+                  <span class="beacon-pulse"></span>
+                  <span class="beacon-core"></span>
+                </span>
+                <span id="stepperTitle" class="stepper-title-text">⚡ Initializing data intelligence runtime...</span>
+              </div>
+              <div class="stepper-controls" style="display: flex; align-items: center; gap: 8px;">
+                <span class="stepper-live-badge" id="stepperLiveBadge">RUNNING</span>
                 <div class="stepper-spinner" id="stepperSpinner">
-                  <span class="dot"></span><span class="dot"></span><span class="dot"></span>
+                  <span class="dot dot-1"></span><span class="dot dot-2"></span><span class="dot dot-3"></span>
                 </div>
                 <span class="stepper-toggle-icon" id="stepperToggleIcon" style="display:none; font-size: 0.72rem; color: var(--text-muted);">▼</span>
               </div>
             </div>
             <div class="stepper-log" id="stepperLog"></div>
+          </div>
+
+          <!-- Active Thinking Skeleton / Shimmer (visible while analyzing) -->
+          <div class="agent-thinking-wave" id="agentThinkingWave">
+            <div class="thinking-header">
+              <span class="thinking-sparkle">✨</span>
+              <span class="thinking-text" id="thinkingStatusText">Autonomous agent synthesizing data & formulating executive report...</span>
+            </div>
+            <div class="thinking-skeleton-lines">
+              <div class="skeleton-shimmer-bar bar-1"></div>
+              <div class="skeleton-shimmer-bar bar-2"></div>
+              <div class="skeleton-shimmer-bar bar-3"></div>
+            </div>
           </div>
 
           <!-- Final Markdown Content -->
@@ -540,8 +724,11 @@
     const stepperHeader = card.querySelector('#stepperHeader');
     const stepperTitle = card.querySelector('#stepperTitle');
     const stepperSpinner = card.querySelector('#stepperSpinner');
+    const stepperLiveBadge = card.querySelector('#stepperLiveBadge');
     const stepperToggleIcon = card.querySelector('#stepperToggleIcon');
     const stepperLog = card.querySelector('#stepperLog');
+    const agentThinkingWave = card.querySelector('#agentThinkingWave');
+    const thinkingStatusText = card.querySelector('#thinkingStatusText');
     const reportContent = card.querySelector('#reportContent');
     const chartsWrapper = card.querySelector('#chartsWrapper');
     const codeAuditWrapper = card.querySelector('#codeAuditWrapper');
@@ -559,23 +746,43 @@
       container: card,
       addLogEntry: (icon, text) => {
         logCount++;
+        // Clear active highlighting from prior steps
+        stepperLog.querySelectorAll('.step-entry').forEach(el => el.classList.remove('is-active-step'));
+
         const item = document.createElement('div');
-        item.className = 'step-entry';
+        item.className = 'step-entry step-entry-animate is-active-step';
         item.innerHTML = `<span class="step-icon">${icon}</span><span>${escapeHtml(text)}</span>`;
         stepperLog.appendChild(item);
         scrollToBottom();
       },
       updateStatus: (titleText, type = 'info') => {
         stepperTitle.textContent = titleText;
+        if (thinkingStatusText && type !== 'error') {
+          thinkingStatusText.textContent = titleText;
+        }
       },
       collapseStepper: () => {
-        stepperSpinner.style.display = 'none';
+        card.classList.remove('is-working');
+        stepper.classList.remove('is-working');
+        if (agentThinkingWave) agentThinkingWave.style.display = 'none';
+        if (stepperSpinner) stepperSpinner.style.display = 'none';
+        if (stepperLiveBadge) {
+          stepperLiveBadge.className = 'stepper-badge-done';
+          stepperLiveBadge.textContent = 'DONE';
+        }
         stepperToggleIcon.style.display = 'inline';
         stepperTitle.textContent = `✅ Analysis complete (${logCount} execution steps) • Click to expand`;
         stepperLog.style.display = 'none';
       },
       finishStreaming: () => {
-        stepperSpinner.style.display = 'none';
+        card.classList.remove('is-working');
+        stepper.classList.remove('is-working');
+        if (agentThinkingWave) agentThinkingWave.style.display = 'none';
+        if (stepperSpinner) stepperSpinner.style.display = 'none';
+        if (stepperLiveBadge) {
+          stepperLiveBadge.className = 'stepper-badge-done';
+          stepperLiveBadge.textContent = 'DONE';
+        }
         if (reportContent.style.display === 'block') {
           stepperToggleIcon.style.display = 'inline';
           stepperTitle.textContent = `✅ Analysis complete (${logCount} execution steps) • Click to expand`;
@@ -585,7 +792,9 @@
         }
       },
       renderReport: (markdownText) => {
+        if (agentThinkingWave) agentThinkingWave.style.display = 'none';
         reportContent.style.display = 'block';
+        reportContent.classList.add('report-animated');
         try {
           if (typeof marked !== 'undefined' && markdownText) {
             reportContent.innerHTML = marked.parse(markdownText);
@@ -601,43 +810,74 @@
         if (!charts || charts.length === 0) return;
         charts.forEach((c, idx) => {
           try {
+            if (!c || c.type === 'unknown') return;
+
             const chartBox = document.createElement('div');
             chartBox.className = 'chart-container';
 
             const chartHeader = document.createElement('div');
             chartHeader.className = 'chart-header';
-            chartHeader.innerHTML = `<span>📊 Visual Breakdown ${idx + 1}</span><span class="badge-tag">Interactive Plotly / Canvas</span>`;
+            const chartTitle = (c.figure && c.figure.layout && c.figure.layout.title && (c.figure.layout.title.text || c.figure.layout.title))
+              ? String(c.figure.layout.title.text || c.figure.layout.title)
+              : `Visual Breakdown ${idx + 1}`;
+            chartHeader.innerHTML = `<span>📊 ${escapeHtml(chartTitle)}</span><span class="badge-tag">Empirical Visualization</span>`;
             chartBox.appendChild(chartHeader);
 
-            if (c.type === 'plotly' && c.figure && typeof Plotly !== 'undefined') {
+            const hasPlotlyFigure = c.type === 'plotly' && c.figure && typeof Plotly !== 'undefined';
+            const imgData = c.data || c.image;
+
+            if (hasPlotlyFigure) {
               const plotDiv = document.createElement('div');
               plotDiv.className = 'plotly-embed';
-              plotDiv.id = `chart_${Date.now()}_${idx}`;
+              const chartDivId = `chart_${Date.now()}_${idx}_${Math.floor(Math.random() * 100000)}`;
+              plotDiv.id = chartDivId;
               chartBox.appendChild(plotDiv);
               chartsWrapper.appendChild(chartBox);
 
+              cleanPlotlyFigureClient(c.figure);
+
               const figure = c.figure;
               figure.layout = figure.layout || {};
-              figure.layout.paper_bgcolor = '#12141C';
-              figure.layout.plot_bgcolor = '#12141C';
-              figure.layout.font = { family: 'Inter, sans-serif', color: '#9CA3AF', size: 11 };
-              figure.layout.margin = { l: 50, r: 25, t: 40, b: 50 };
+              figure.layout.paper_bgcolor = figure.layout.paper_bgcolor || '#12141C';
+              figure.layout.plot_bgcolor = figure.layout.plot_bgcolor || '#12141C';
+              figure.layout.font = figure.layout.font || { family: 'Inter, sans-serif', color: '#9CA3AF', size: 11 };
+              figure.layout.margin = figure.layout.margin || { l: 50, r: 25, t: 40, b: 50 };
 
-              Plotly.newPlot(plotDiv.id, figure.data, figure.layout, {
+              Plotly.newPlot(plotDiv, figure.data, figure.layout, {
                 responsive: true,
                 displayModeBar: true,
                 displaylogo: false,
                 modeBarButtonsToRemove: ['sendDataToCloud', 'hoverClosestCartesian', 'hoverCompareCartesian'],
+              }).catch(err => {
+                console.warn('Plotly render error, switching to static image fallback:', err);
+                if (imgData) {
+                  plotDiv.remove();
+                  const img = document.createElement('img');
+                  img.src = imgData;
+                  img.className = 'chart-static-img';
+                  chartBox.appendChild(img);
+                }
               });
-            } else if (c.type === 'image' && c.data) {
+            } else if (imgData) {
               const img = document.createElement('img');
-              img.src = c.data;
+              img.src = imgData;
               img.className = 'chart-static-img';
               chartBox.appendChild(img);
               chartsWrapper.appendChild(chartBox);
             }
           } catch (chartErr) {
             console.error('Error rendering chart element:', chartErr);
+            if (c && (c.data || c.image)) {
+              try {
+                const fallbackBox = document.createElement('div');
+                fallbackBox.className = 'chart-container';
+                const img = document.createElement('img');
+                img.src = c.data || c.image;
+                img.className = 'chart-static-img';
+                fallbackBox.appendChild(img);
+                chartsWrapper.appendChild(fallbackBox);
+              } catch (e) {}
+            }
           }
         });
       },
@@ -694,6 +934,7 @@
 
     if (data.type === 'status') {
       uiCard.updateStatus(data.message);
+      if (workingBannerText) workingBannerText.textContent = data.message;
       if (data.stage === 'reasoning') {
         uiCard.addLogEntry('🧠', data.message);
       } else if (data.stage === 'executing') {
@@ -703,16 +944,20 @@
       }
     } else if (data.type === 'code') {
       uiCard.addLogEntry('💻', `Generated Step ${data.step} Python script`);
+      if (workingBannerText) workingBannerText.textContent = `Generated Step ${data.step} Python code...`;
     } else if (data.type === 'execution') {
       if (data.success) {
         let note = `Step ${data.step} execution successful.`;
         if (data.is_plotly) note += ' (Captured interactive Plotly chart)';
         else if (data.has_chart) note += ' (Captured visualization figure)';
         uiCard.addLogEntry('✅', note);
+        if (workingBannerText) workingBannerText.textContent = `Step ${data.step} executed successfully`;
       } else {
         uiCard.addLogEntry('⚠️', `Step ${data.step} error encountered, auto-correcting: ${data.error || 'Syntax error'}`);
+        if (workingBannerText) workingBannerText.textContent = `Self-healing error in Step ${data.step}...`;
       }
     } else if (data.type === 'final_answer') {
+      setAgentWorkingUI(false);
       uiCard.collapseStepper();
       uiCard.renderReport(data.answer);
       if (data.charts && data.charts.length > 0) {
@@ -722,15 +967,57 @@
         uiCard.renderCodeAudit(data.code);
       }
       scrollToBottom();
+    } else if (data.type === 'done') {
+      setAgentWorkingUI(false);
+      uiCard.finishStreaming();
     } else if (data.type === 'error') {
+      setAgentWorkingUI(false);
       uiCard.updateStatus(`❌ ${data.error}`, 'error');
       uiCard.addLogEntry('❌', data.error);
+      uiCard.finishStreaming();
     }
+  }
+
+  function cleanPlotlyFigureClient(figure) {
+    if (!figure || !figure.data || !Array.isArray(figure.data)) return;
+    figure.data.forEach(trace => {
+      if (!trace || typeof trace !== 'object') return;
+      ['x', 'y', 'z', 'values', 'labels'].forEach(axis => {
+        const val = trace[axis];
+        if (val && typeof val === 'object' && !Array.isArray(val) && val.bdata && val.dtype) {
+          try {
+            const binaryStr = atob(val.bdata);
+            const len = binaryStr.length;
+            const bytes = new Uint8Array(len);
+            for (let i = 0; i < len; i++) {
+              bytes[i] = binaryStr.charCodeAt(i);
+            }
+            let typedArray;
+            const dt = String(val.dtype).toLowerCase();
+            if (dt === 'i1') typedArray = new Int8Array(bytes.buffer);
+            else if (dt === 'u1') typedArray = new Uint8Array(bytes.buffer);
+            else if (dt === 'i2') typedArray = new Int16Array(bytes.buffer);
+            else if (dt === 'u2') typedArray = new Uint16Array(bytes.buffer);
+            else if (dt === 'i4') typedArray = new Int32Array(bytes.buffer);
+            else if (dt === 'u4') typedArray = new Uint32Array(bytes.buffer);
+            else if (dt === 'f4') typedArray = new Float32Array(bytes.buffer);
+            else if (dt === 'f8') typedArray = new Float64Array(bytes.buffer);
+            else typedArray = bytes;
+
+            trace[axis] = Array.from(typedArray);
+          } catch (e) {
+            console.warn('Could not decode bdata on client:', e);
+          }
+        }
+      });
+    });
   }
 
   function appendAgentMessage(entry) {
     const card = createAgentStreamingCard(entry.timestamp || 'Just now');
+    card.container.classList.remove('is-working');
     card.finishStreaming();
+    chatTimeline.appendChild(card.container);
     card.renderReport(entry.answer);
     if (entry.charts && entry.charts.length > 0) {
       card.renderCharts(entry.charts);
@@ -738,7 +1025,6 @@
     if (entry.code && entry.code.length > 0) {
       card.renderCodeAudit(entry.code);
     }
-    chatTimeline.appendChild(card.container);
   }
 
   function scrollToBottom() {
@@ -837,6 +1123,7 @@
       
       // Reset UI
       currentDatasets = [];
+      renderUploadedFileList([]);
       metricsCard.style.display = 'none';
       tablePreviewCard.style.display = 'none';
       enableExportButtons(false);

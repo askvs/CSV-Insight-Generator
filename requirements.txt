@@ -4,8 +4,8 @@ matplotlib
 groq
 reportlab
 python-dotenv
-streamlit
 plotly
 openpyxl
 kaleido
 flask
+gunicorn
