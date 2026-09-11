@@ -129,12 +129,22 @@ def profile_dataframe(df, was_truncated=False):
     """
     n_rows, n_cols = df.shape
 
+    # Compute missing values summary
+    total_cells = n_rows * n_cols
+    total_missing = int(df.isna().sum().sum()) if total_cells > 0 else 0
+    total_missing_pct = round((total_missing / total_cells) * 100, 1) if total_cells > 0 else 0.0
+
     profile = {
         "shape": {"rows": n_rows, "columns": n_cols},
         "memory_mb": round(
             df.memory_usage(deep=True).sum() / 1_048_576, 2
         ),  # bytes into Megabytes
         "truncated": was_truncated,
+        "missing_values": {
+            "total_missing": total_missing,
+            "total_cells": total_cells,
+            "total_missing_percentage": total_missing_pct,
+        },
     }
 
     # Decide which columns get full detail vs. brief summary

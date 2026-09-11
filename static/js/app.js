@@ -25,6 +25,7 @@
   const tablePageSize = 25;
   let tableSearchDebounceTimer = null;
   let isAgentAnalyzing = false;
+  let activeStreamReader = null;  // Track active SSE reader to abort on new upload
 
   // Configure Marked.js options
   if (typeof marked !== 'undefined') {
@@ -342,6 +343,18 @@
       formData.append('files', files[i]);
     }
 
+    // If agent is currently analyzing, abort the active SSE stream first
+    if (isAgentAnalyzing && activeStreamReader) {
+      try {
+        await activeStreamReader.cancel();
+      } catch (e) {
+        // Reader may already be closed
+      }
+      activeStreamReader = null;
+      setAgentWorkingUI(false);
+      showToast('Previous analysis aborted — loading new data...', 'info');
+    }
+
     uploadProgressBar.style.display = 'flex';
     progressLabel.textContent = `Ingesting & profiling ${files.length} dataset(s)...`;
 
@@ -365,10 +378,10 @@
       loadTableData(data.tables[0].name, 1);
       enableExportButtons(true);
 
-      // Add welcoming agent prompt tip in chat
-      if (chatTimeline.children.length <= 1) {
-        welcomeHero.style.display = 'flex';
-      }
+      // Clear stale chat messages from previous dataset analysis
+      chatTimeline.innerHTML = '';
+      chatTimeline.appendChild(welcomeHero);
+      welcomeHero.style.display = 'flex';
 
     } catch (err) {
       showToast(err.message, 'error');
@@ -602,6 +615,7 @@
       }
 
       const reader = response.body.getReader();
+      activeStreamReader = reader;  // Store reference so uploads can abort this stream
       const decoder = new TextDecoder('utf-8');
       let buffer = '';
 
@@ -637,8 +651,12 @@
 
     } catch (err) {
       agentMsgCard.updateStatus(`❌ ${err.message}`, 'error');
-      showToast(err.message, 'error');
+      // Only show error toast if it's not an intentional abort from re-upload
+      if (err.name !== 'AbortError' && !err.message?.includes('cancel')) {
+        showToast(err.message, 'error');
+      }
     } finally {
+      activeStreamReader = null;
       setAgentWorkingUI(false);
       agentMsgCard.finishStreaming();
       enableExportButtons(true);

@@ -156,6 +156,10 @@ def get_session(session_id: str) -> dict[str, Any]:
                     except Exception:
                         loaded_data["agent"] = None
 
+                # Ensure cancel_event exists (not serializable via pickle)
+                if not loaded_data.get("cancel_event"):
+                    loaded_data["cancel_event"] = threading.Event()
+
                 SESSION_STORE[session_id] = loaded_data
                 return SESSION_STORE[session_id]
             except Exception as e:
@@ -173,6 +177,7 @@ def get_session(session_id: str) -> dict[str, Any]:
             "chat_log": [],  # list of message dicts
             "raw_charts": [],  # list of native chart objects for exports
             "is_truncated": False,
+            "cancel_event": threading.Event(),  # signal running agent threads to abort on data change
             "created_at": time.time(),
             "last_accessed": time.time(),
         }
@@ -520,6 +525,11 @@ def upload_datasets():
         agent = CSVInsightAgent()
 
         with SESSION_LOCK:
+            # Signal any running agent thread to abort — data is being replaced
+            old_cancel = sess.get("cancel_event")
+            if old_cancel and isinstance(old_cancel, threading.Event):
+                old_cancel.set()
+
             sess["dfs"] = dfs
             sess["df"] = next(iter(dfs.values())) if dfs else None
             sess["dataset_names"] = list(dfs.keys())
@@ -533,6 +543,8 @@ def upload_datasets():
             sess["chat_log"] = []
             sess["raw_charts"] = []
             sess["is_truncated"] = any(truncations.values())
+            # Fresh cancel event for the new data context
+            sess["cancel_event"] = threading.Event()
 
         save_session(session_id)
 
@@ -692,9 +704,20 @@ def chat_stream():
     sess["chat_log"].append(user_entry)
 
     event_queue: queue.Queue = queue.Queue()
+    # Snapshot the cancel event and data context at the time the question is asked,
+    # so that if a new upload occurs mid-analysis, this thread detects it and aborts.
+    cancel_event: threading.Event = sess.get("cancel_event") or threading.Event()
+    snapshot_namespace = sess.get("namespace")
+    snapshot_profile = sess.get("profile")
+    snapshot_history = sess.get("history")
+    snapshot_agent: CSVInsightAgent | None = sess.get("agent")
 
     def agent_worker():
         def on_agent_status(event: str, d: dict):
+            # Check if this analysis has been cancelled by a new upload
+            if cancel_event.is_set():
+                return
+
             step = d.get("step", 1)
             phase = d.get("phase", "planning")
             is_retry = d.get("is_retry", False)
@@ -758,14 +781,31 @@ def chat_stream():
                 })
 
         try:
-            agent: CSVInsightAgent = sess["agent"]
+            # Check cancellation before starting
+            if cancel_event.is_set():
+                event_queue.put({"type": "error", "error": "Analysis cancelled — new dataset was uploaded."})
+                event_queue.put(None)
+                return
+
+            agent = snapshot_agent
+            if agent is None:
+                event_queue.put({"type": "error", "error": "No agent available. Please re-upload the dataset."})
+                event_queue.put(None)
+                return
+
             result = agent.run_turn(
                 user_question=user_question,
-                profile_dict=sess["profile"],
-                namespace=sess["namespace"],
-                history=sess["history"],
+                profile_dict=snapshot_profile,
+                namespace=snapshot_namespace,
+                history=snapshot_history,
                 status_callback=on_agent_status,
             )
+
+            # Check cancellation after agent finishes — discard stale results
+            if cancel_event.is_set():
+                event_queue.put({"type": "error", "error": "Analysis cancelled — new dataset was uploaded."})
+                event_queue.put(None)
+                return
 
             sess["history"] = result.get("history")
 
@@ -781,6 +821,12 @@ def chat_stream():
                     fb_chart = _create_fallback_visualization(target_df)
                     if fb_chart is not None:
                         raw_charts = [fb_chart]
+
+            # Final cancellation check before writing results to session
+            if cancel_event.is_set():
+                event_queue.put({"type": "error", "error": "Analysis cancelled — new dataset was uploaded."})
+                event_queue.put(None)
+                return
 
             client_charts = [_serialize_chart_for_client(c) for c in raw_charts]
             client_charts = [c for c in client_charts if c.get("type") != "unknown"]
