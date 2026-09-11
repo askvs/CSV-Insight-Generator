@@ -10,13 +10,14 @@
   // ────────────────────────────────────────────────────────────
   // State & Configuration
   // ────────────────────────────────────────────────────────────
-  let sessionId = localStorage.getItem('csv_insight_session_id');
+  const urlParams = new URLSearchParams(window.location.search);
+  let sessionId = urlParams.get('session_id') || localStorage.getItem('csv_insight_session_id');
   if (!sessionId) {
     sessionId = (typeof crypto !== 'undefined' && crypto.randomUUID) 
       ? crypto.randomUUID() 
       : 'sess_' + Math.random().toString(36).substring(2, 15);
-    localStorage.setItem('csv_insight_session_id', sessionId);
   }
+  localStorage.setItem('csv_insight_session_id', sessionId);
 
   let currentDatasets = [];
   let activeTableName = '';
@@ -767,21 +768,25 @@
     showToast('Generating formal 5-section executive PDF report...', 'info');
 
     try {
-      const res = await apiFetch('/api/export/pdf', { method: 'POST' });
-      if (!res.ok) {
-        const errJson = await res.json().catch(() => ({}));
-        throw new Error(errJson.error || 'Failed to generate PDF report.');
+      // 1. Verify export readiness with backend
+      const checkRes = await apiFetch(`/api/export/check?type=pdf`);
+      const checkData = await checkRes.json().catch(() => ({}));
+      if (!checkRes.ok || !checkData.ok) {
+        throw new Error(checkData.error || 'No completed intelligence analysis or dataset available to generate a PDF report.');
       }
 
-      const blob = await res.blob();
-      const url = window.URL.createObjectURL(blob);
+      // 2. Direct browser download via native HTTP attachment
+      // Navigating or triggering a download with Content-Disposition: attachment
+      // ensures Chrome reads the HTTP header directly, preserving the .pdf extension
+      // and Adobe/PDF file associations without premature blob revocation issues.
+      const downloadUrl = `/api/export/pdf?session_id=${encodeURIComponent(sessionId)}&t=${Date.now()}`;
       const a = document.createElement('a');
-      a.href = url;
-      a.download = `csv_insight_report_${Date.now()}.pdf`;
+      a.style.display = 'none';
+      a.href = downloadUrl;
+      a.setAttribute('download', '');
       document.body.appendChild(a);
       a.click();
-      a.remove();
-      window.URL.revokeObjectURL(url);
+      setTimeout(() => a.remove(), 2000);
 
       showToast('Executive PDF report downloaded successfully!', 'success');
     } catch (err) {
@@ -796,21 +801,20 @@
     showToast('Preparing reproducible Jupyter Notebook (.ipynb)...', 'info');
 
     try {
-      const res = await apiFetch('/api/export/notebook');
-      if (!res.ok) {
-        const errJson = await res.json().catch(() => ({}));
-        throw new Error(errJson.error || 'Failed to prepare Jupyter notebook.');
+      const checkRes = await apiFetch(`/api/export/check?type=notebook`);
+      const checkData = await checkRes.json().catch(() => ({}));
+      if (!checkRes.ok || !checkData.ok) {
+        throw new Error(checkData.error || 'No dataset loaded to export into a notebook.');
       }
 
-      const blob = await res.blob();
-      const url = window.URL.createObjectURL(blob);
+      const downloadUrl = `/api/export/notebook?session_id=${encodeURIComponent(sessionId)}&t=${Date.now()}`;
       const a = document.createElement('a');
-      a.href = url;
-      a.download = `csv_insight_notebook_${Date.now()}.ipynb`;
+      a.style.display = 'none';
+      a.href = downloadUrl;
+      a.setAttribute('download', '');
       document.body.appendChild(a);
       a.click();
-      a.remove();
-      window.URL.revokeObjectURL(url);
+      setTimeout(() => a.remove(), 2000);
 
       showToast('Jupyter Notebook downloaded successfully!', 'success');
     } catch (err) {

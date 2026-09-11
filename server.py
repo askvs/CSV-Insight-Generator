@@ -14,6 +14,7 @@ import base64
 import io
 import json
 import os
+import pickle
 import queue
 import sys
 import threading
@@ -58,34 +59,104 @@ app = Flask(__name__, template_folder="templates", static_folder="static")
 app.config["MAX_CONTENT_LENGTH"] = 250 * 1024 * 1024  # 250 MB max upload limit
 
 # ────────────────────────────────────────────────────────────
-# In-Memory Session Store
+# Session Store with Disk Persistence
 # ────────────────────────────────────────────────────────────
 # Maps session_id -> dict with session state
 SESSION_STORE: dict[str, dict[str, Any]] = {}
 SESSION_LOCK = threading.Lock()
+SESSIONS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".sessions")
+os.makedirs(SESSIONS_DIR, exist_ok=True)
+
+
+def _get_session_path(session_id: str) -> str:
+    safe_name = "".join(c for c in session_id if c.isalnum() or c in ("-", "_"))
+    return os.path.join(SESSIONS_DIR, f"{safe_name}.pkl")
+
+
+def save_session(session_id: str) -> None:
+    """Persists serializable session state to disk for crash and reload resilience."""
+    if not session_id:
+        return
+    with SESSION_LOCK:
+        sess = SESSION_STORE.get(session_id)
+        if not sess:
+            return
+
+        data_to_save = {
+            "dfs": sess.get("dfs", {}),
+            "df": sess.get("df"),
+            "dataset_names": sess.get("dataset_names", []),
+            "dataset_name": sess.get("dataset_name", ""),
+            "profile": sess.get("profile"),
+            "history": sess.get("history"),
+            "chat_log": sess.get("chat_log", []),
+            "raw_charts": sess.get("raw_charts", []),
+            "is_truncated": sess.get("is_truncated", False),
+            "created_at": sess.get("created_at", time.time()),
+            "last_accessed": sess.get("last_accessed", time.time()),
+        }
+
+    path = _get_session_path(session_id)
+    tmp_path = path + f".tmp_{os.getpid()}_{int(time.time()*1000)}"
+    try:
+        with open(tmp_path, "wb") as f:
+            pickle.dump(data_to_save, f, protocol=pickle.HIGHEST_PROTOCOL)
+        os.replace(tmp_path, path)
+    except Exception as e:
+        if os.path.exists(tmp_path):
+            try:
+                os.remove(tmp_path)
+            except Exception:
+                pass
+        print(f"[Warning] Failed to persist session {session_id} to disk: {e}", file=sys.stderr)
 
 
 def get_session(session_id: str) -> dict[str, Any]:
-    """Retrieve or initialize an in-memory session."""
+    """Retrieve an active session from RAM, or restore it from disk cache."""
     with SESSION_LOCK:
-        if session_id not in SESSION_STORE:
-            SESSION_STORE[session_id] = {
-                "dfs": {},
-                "df": None,
-                "dataset_names": [],
-                "dataset_name": "",
-                "profile": None,
-                "namespace": None,
-                "agent": None,
-                "history": None,
-                "chat_log": [],  # list of message dicts
-                "raw_charts": [],  # list of native chart objects for exports
-                "is_truncated": False,
-                "created_at": time.time(),
-                "last_accessed": time.time(),
-            }
-        else:
+        if session_id in SESSION_STORE:
             SESSION_STORE[session_id]["last_accessed"] = time.time()
+            return SESSION_STORE[session_id]
+
+        # Attempt to restore from disk cache
+        path = _get_session_path(session_id)
+        if os.path.exists(path):
+            try:
+                with open(path, "rb") as f:
+                    loaded_data = pickle.load(f)
+                loaded_data["last_accessed"] = time.time()
+                # Reconstruct sandbox namespace and agent if missing
+                if loaded_data.get("dfs") and not loaded_data.get("namespace"):
+                    try:
+                        loaded_data["namespace"] = create_namespace(loaded_data["dfs"])
+                    except Exception:
+                        loaded_data["namespace"] = None
+                if not loaded_data.get("agent"):
+                    try:
+                        loaded_data["agent"] = CSVInsightAgent()
+                    except Exception:
+                        loaded_data["agent"] = None
+
+                SESSION_STORE[session_id] = loaded_data
+                return SESSION_STORE[session_id]
+            except Exception as e:
+                print(f"[Warning] Could not restore session {session_id} from disk: {e}", file=sys.stderr)
+
+        SESSION_STORE[session_id] = {
+            "dfs": {},
+            "df": None,
+            "dataset_names": [],
+            "dataset_name": "",
+            "profile": None,
+            "namespace": None,
+            "agent": None,
+            "history": None,
+            "chat_log": [],  # list of message dicts
+            "raw_charts": [],  # list of native chart objects for exports
+            "is_truncated": False,
+            "created_at": time.time(),
+            "last_accessed": time.time(),
+        }
         return SESSION_STORE[session_id]
 
 
@@ -273,6 +344,8 @@ def upload_datasets():
             sess["chat_log"] = []
             sess["raw_charts"] = []
             sess["is_truncated"] = any(truncations.values())
+
+        save_session(session_id)
 
         tables_summary = []
         for name, d in dfs.items():
@@ -478,6 +551,7 @@ def chat_stream():
             event_queue.put({"type": "error", "error": err_msg})
 
         finally:
+            save_session(session_id)
             event_queue.put(None)
 
     threading.Thread(target=agent_worker, daemon=True).start()
@@ -516,6 +590,34 @@ def chat_stream():
             "Connection": "keep-alive",
         },
     )
+
+
+@app.route("/api/export/check", methods=["GET"])
+def export_check():
+    """Validates whether a session has dataset/analysis data ready for export."""
+    session_id = get_session_id_from_request()
+    sess = get_session(session_id)
+    export_type = request.args.get("type", "pdf")
+
+    dfs = sess.get("dfs") or {}
+    chat_log = sess.get("chat_log", [])
+    valid_responses = [
+        e for e in chat_log
+        if e.get("role") in ("agent", "assistant") and _is_substantive_report(e.get("content", ""))
+    ]
+
+    if not dfs and not valid_responses:
+        return jsonify({
+            "ok": False,
+            "error": "No dataset or completed intelligence analysis available for export. Please upload a dataset first.",
+        }), 400
+
+    return jsonify({
+        "ok": True,
+        "type": export_type,
+        "dataset_name": sess.get("dataset_name") or "dataset.csv",
+        "has_analysis": bool(valid_responses),
+    })
 
 
 @app.route("/api/export/pdf", methods=["POST", "GET"])
@@ -571,17 +673,20 @@ def export_pdf():
         )
 
         filename = f"csv_insight_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf"
-        return send_file(
+        resp = send_file(
             io.BytesIO(pdf_bytes),
             mimetype="application/pdf",
             as_attachment=True,
             download_name=filename,
         )
+        resp.headers["Content-Disposition"] = f'attachment; filename="{filename}"'
+        resp.headers["Access-Control-Expose-Headers"] = "Content-Disposition"
+        return resp
     except Exception as e:
         return jsonify({"error": f"Failed to generate PDF: {e!s}"}), 500
 
 
-@app.route("/api/export/notebook", methods=["GET"])
+@app.route("/api/export/notebook", methods=["POST", "GET"])
 def export_notebook():
     """Generates and downloads the reproducible Jupyter Notebook (.ipynb)."""
     session_id = get_session_id_from_request()
@@ -612,7 +717,10 @@ def export_notebook():
         return Response(
             nb_json,
             mimetype="application/x-ipynb+json",
-            headers={"Content-Disposition": f"attachment; filename={filename}"},
+            headers={
+                "Content-Disposition": f'attachment; filename="{filename}"',
+                "Access-Control-Expose-Headers": "Content-Disposition",
+            },
         )
     except Exception as e:
         return jsonify({"error": f"Failed to prepare notebook: {e!s}"}), 500
@@ -625,6 +733,14 @@ def reset_session():
     with SESSION_LOCK:
         if session_id in SESSION_STORE:
             del SESSION_STORE[session_id]
+
+    # Delete disk cache file
+    path = _get_session_path(session_id)
+    if os.path.exists(path):
+        try:
+            os.remove(path)
+        except Exception:
+            pass
 
     return jsonify({"success": True, "message": "Session reset successfully."})
 

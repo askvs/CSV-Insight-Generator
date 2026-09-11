@@ -33,3 +33,4 @@ pyrightconfig.json
 
 # Test / scratch files
 scratch_test.py
+.sessions/
