@@ -1,0 +1,304 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>CSV & Multi-Dataset Insight Agent — AI Data Studio</title>
+  <meta name="description" content="Autonomous data intelligence engine that writes and executes Python code in a secure sandbox, generates interactive Plotly charts, and synthesizes 5-section executive reports.">
+
+  <!-- Google Fonts: Inter & JetBrains Mono -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+
+  <!-- Plotly.js for Interactive Visualizations -->
+  <script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
+
+  <!-- Marked.js for Markdown Rendering -->
+  <script src="https://cdn.jsdelivr.net/npm/marked@12.0.2/marked.min.js"></script>
+
+  <!-- Highlight.js for Code Highlighting -->
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/atom-one-dark.min.css">
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/python.min.js"></script>
+
+  <!-- Custom CSS -->
+  <link rel="stylesheet" href="/static/css/style.css">
+</head>
+<body>
+
+  <!-- Top Navigation Header -->
+  <header class="app-header" id="appHeader">
+    <div class="header-left">
+      <div class="brand-logo">
+        <svg class="brand-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M3 3v18h18"/>
+          <path d="m19 9-5 5-4-4-3 3"/>
+          <circle cx="19" cy="9" r="1.5" fill="currentColor"/>
+          <circle cx="14" cy="14" r="1.5" fill="currentColor"/>
+        </svg>
+      </div>
+      <div class="brand-titles">
+        <div class="brand-name-wrap">
+          <h1 class="brand-title">CSV & Multi-Dataset Insight Agent</h1>
+          <span class="badge-version">v2.0 Web Studio</span>
+        </div>
+        <p class="brand-sub">Autonomous Python Sandbox Execution • Interactive Plotly Analytics • Board-Ready Briefings</p>
+      </div>
+    </div>
+
+    <div class="header-right">
+      <div class="connection-pill" id="agentConnectionStatus">
+        <span class="pulse-dot"></span>
+        <span class="pill-text">Groq AI Active</span>
+      </div>
+
+      <div class="header-actions">
+        <button class="btn btn-secondary btn-sm" id="btnExportPdf" title="Download formal 5-section executive report (ReportLab PDF)" disabled>
+          <svg class="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+            <polyline points="14 2 14 8 20 8"/>
+            <line x1="16" y1="13" x2="8" y2="13"/>
+            <line x1="16" y1="17" x2="8" y2="17"/>
+            <polyline points="10 9 9 9 8 9"/>
+          </svg>
+          <span>Export PDF</span>
+        </button>
+
+        <button class="btn btn-secondary btn-sm" id="btnExportNb" title="Download reproducible Jupyter Notebook (.ipynb)" disabled>
+          <svg class="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/>
+            <path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/>
+          </svg>
+          <span>Jupyter (.ipynb)</span>
+        </button>
+
+        <button class="btn btn-outline-danger btn-sm" id="btnResetSession" title="Reset all datasets and chat history">
+          <svg class="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M3 12a9 9 0 0 1 15-6.7L21 8"/>
+            <path d="M21 3v5h-5"/>
+            <path d="M21 12a9 9 0 0 1-15 6.7L3 16"/>
+            <path d="M3 21v-5h5"/>
+          </svg>
+          <span>Reset</span>
+        </button>
+      </div>
+    </div>
+  </header>
+
+  <!-- Main Application Container -->
+  <main class="app-workspace" id="appWorkspace">
+
+    <!-- Left Sidebar: Dataset Hub & Data Explorer -->
+    <aside class="sidebar-panel" id="sidebarPanel">
+
+      <!-- Upload Section -->
+      <div class="sidebar-card upload-card" id="uploadCard">
+        <div class="card-header">
+          <div class="card-title-group">
+            <svg class="card-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+              <polyline points="17 8 12 3 7 8"/>
+              <line x1="12" y1="3" x2="12" y2="15"/>
+            </svg>
+            <h2 class="card-title">Dataset Ingestion</h2>
+          </div>
+          <span class="badge-tag">Multi-Format</span>
+        </div>
+
+        <div class="drop-zone" id="dropZone">
+          <input type="file" id="fileInput" multiple accept=".csv,.xlsx,.xls,.parquet,.json" class="file-input-hidden">
+          <div class="drop-zone-content">
+            <div class="upload-icon-circle">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M4 14.899A7 7 0 1 1 15.71 8h1.79a4.5 4.5 0 0 1 2.5 8.242"/>
+                <path d="M12 12v9"/>
+                <path d="m16 16-4-4-4 4"/>
+              </svg>
+            </div>
+            <p class="drop-prompt"><strong>Click to browse</strong> or drop datasets here</p>
+            <div class="format-badges">
+              <span class="fmt-badge">CSV</span>
+              <span class="fmt-badge">EXCEL</span>
+              <span class="fmt-badge">PARQUET</span>
+              <span class="fmt-badge">JSON</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="upload-progress-bar" id="uploadProgressBar" style="display: none;">
+          <div class="progress-fill" id="progressFill"></div>
+          <span class="progress-label" id="progressLabel">Ingesting & profiling dataset(s)...</span>
+        </div>
+      </div>
+
+      <!-- Overview Metrics -->
+      <div class="sidebar-card metrics-card" id="metricsCard" style="display: none;">
+        <div class="card-header">
+          <div class="card-title-group">
+            <svg class="card-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <rect x="2" y="2" width="20" height="8" rx="2"/>
+              <rect x="2" y="14" width="20" height="8" rx="2"/>
+              <line x1="6" y1="6" x2="6.01" y2="6"/>
+              <line x1="6" y1="18" x2="6.01" y2="18"/>
+            </svg>
+            <h2 class="card-title">Dataset Telemetry</h2>
+          </div>
+          <span class="badge-tag" id="tableCountTag">1 Table</span>
+        </div>
+
+        <div class="metrics-grid" id="metricsGrid">
+          <!-- Dynamically populated -->
+        </div>
+
+        <!-- Relational join keys banner -->
+        <div class="relational-keys-box" id="relationalKeysBox" style="display: none;">
+          <div class="rk-header">
+            <svg class="rk-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/>
+              <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/>
+            </svg>
+            <span>Relational Join Keys Detected</span>
+          </div>
+          <div class="rk-tags" id="relationalKeysList"></div>
+        </div>
+      </div>
+
+      <!-- Interactive Data Explorer Grid -->
+      <div class="sidebar-card table-preview-card" id="tablePreviewCard" style="display: none;">
+        <div class="card-header preview-header">
+          <div class="card-title-group">
+            <svg class="card-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M3 3h18v18H3z"/>
+              <path d="M3 9h18"/>
+              <path d="M3 15h18"/>
+              <path d="M9 3v18"/>
+              <path d="M15 3v18"/>
+            </svg>
+            <h2 class="card-title">Data Explorer</h2>
+          </div>
+          <div class="table-tab-list" id="tableTabList"></div>
+        </div>
+
+        <div class="table-search-row">
+          <div class="search-input-wrap">
+            <svg class="search-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <circle cx="11" cy="11" r="8"/>
+              <line x1="21" y1="21" x2="16.65" y2="16.65"/>
+            </svg>
+            <input type="text" id="tableSearchInput" placeholder="Filter rows in active table..." class="search-input">
+          </div>
+        </div>
+
+        <div class="table-scroll-container" id="tableScrollContainer">
+          <table class="data-grid-table" id="dataGridTable">
+            <thead id="dataGridHead"></thead>
+            <tbody id="dataGridBody"></tbody>
+          </table>
+        </div>
+
+        <div class="table-pagination-footer" id="tablePaginationFooter">
+          <span class="pagination-info" id="paginationInfo">Showing 1-25 of 0</span>
+          <div class="pagination-btns">
+            <button class="btn btn-icon-sm" id="btnPagePrev" title="Previous page" disabled>
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="15 18 9 12 15 6"/></svg>
+            </button>
+            <span class="page-current" id="pageCurrentIndicator">1</span>
+            <button class="btn btn-icon-sm" id="btnPageNext" title="Next page" disabled>
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 18 15 12 9 6"/></svg>
+            </button>
+          </div>
+        </div>
+      </div>
+
+    </aside>
+
+    <!-- Right Panel: AI Analytics Console & Chat -->
+    <section class="console-panel" id="consolePanel">
+
+      <!-- Chat Timeline Messages Container -->
+      <div class="chat-timeline" id="chatTimeline">
+
+        <!-- Welcome Empty State -->
+        <div class="welcome-hero" id="welcomeHero">
+          <div class="welcome-badge">
+            <span class="sparkle-icon">✨</span>
+            <span>Agentic Data Science Runtime</span>
+          </div>
+          <h2 class="welcome-title">What would you like to investigate today?</h2>
+          <p class="welcome-desc">
+            Drop one or more datasets on the left. The AI agent writes and executes Python in a sandboxed sandbox environment, computes aggregations, crafts interactive Plotly visuals, and delivers formal executive briefings.
+          </p>
+
+          <div class="prompt-starters-grid">
+            <button class="prompt-chip" data-prompt="What are the key trends, patterns, and correlations in this dataset? Generate an interactive chart breakdown.">
+              <span class="chip-icon">📊</span>
+              <div class="chip-text">
+                <strong>Executive Trend Analysis</strong>
+                <span>Discover core patterns & correlations across key metrics</span>
+              </div>
+            </button>
+
+            <button class="prompt-chip" data-prompt="Analyze the distribution and detect any anomalies, extreme outliers, or skew across numeric variables.">
+              <span class="chip-icon">🔍</span>
+              <div class="chip-text">
+                <strong>Anomaly & Outlier Audit</strong>
+                <span>Detect anomalies, distribution skews & data health metrics</span>
+              </div>
+            </button>
+
+            <button class="prompt-chip" data-prompt="Perform a cross-table join or cohort breakdown to identify top-performing segments and drivers.">
+              <span class="chip-icon">🔗</span>
+              <div class="chip-text">
+                <strong>Cohort & Segment Deep-Dive</strong>
+                <span>Cross-table joins, segmentation & top customer/product rankings</span>
+              </div>
+            </button>
+
+            <button class="prompt-chip" data-prompt="Create an interactive multi-dimensional Plotly chart comparing the top categories by total volume and average value.">
+              <span class="chip-icon">📈</span>
+              <div class="chip-text">
+                <strong>Interactive Plotly Visuals</strong>
+                <span>Multi-dimensional interactive charts with zoom & hover tooltips</span>
+              </div>
+            </button>
+          </div>
+        </div>
+
+      </div>
+
+      <!-- Sticky Chat Input Bar -->
+      <div class="input-dock" id="inputDock">
+        <form class="chat-input-form" id="chatForm">
+          <div class="input-wrapper">
+            <textarea
+              id="questionInput"
+              class="chat-textarea"
+              placeholder="Ask an analytical question or request a visualization... (Press Enter to send, Shift+Enter for new line)"
+              rows="1"
+            ></textarea>
+            <button type="submit" class="btn btn-primary btn-send" id="btnSend" title="Send question">
+              <svg class="send-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <line x1="22" y1="2" x2="11" y2="13"/>
+                <polygon points="22 2 15 22 11 13 2 9 22 2"/>
+              </svg>
+            </button>
+          </div>
+          <div class="input-footer">
+            <span class="input-hint">💡 Press <kbd>Enter ↵</kbd> to analyze • <kbd>Shift + Enter</kbd> for multi-line queries</span>
+            <span class="engine-tag">Groq LPU Runtime • Python Sandbox • Plotly.js</span>
+          </div>
+        </form>
+      </div>
+
+    </section>
+
+  </main>
+
+  <!-- Notification Toast Container -->
+  <div class="toast-container" id="toastContainer"></div>
+
+  <!-- Custom JavaScript Application Logic -->
+  <script src="/static/js/app.js"></script>
+</body>
+</html>

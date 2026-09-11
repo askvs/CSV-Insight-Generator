@@ -1,0 +1,11 @@
+transaction_id,customer_id,customer_segment,product_category,units,unit_price,total_spend,payment_method,region
+TXN_1001,CUST_401,Enterprise,Cloud Computing,5,199.99,999.95,Credit Card,North America
+TXN_1002,CUST_402,SMB,Hardware,12,45.50,546.00,Wire Transfer,Europe
+TXN_1003,CUST_403,Consumer,Peripherals,2,29.99,59.98,PayPal,North America
+TXN_1004,CUST_404,Enterprise,Security Software,10,120.00,1200.00,Credit Card,Asia-Pacific
+TXN_1005,CUST_401,Enterprise,Cloud Computing,8,199.99,1599.92,Credit Card,North America
+TXN_1006,CUST_405,SMB,Peripherals,15,18.75,281.25,Credit Card,Europe
+TXN_1007,CUST_406,Consumer,Hardware,1,850.00,850.00,PayPal,Latin America
+TXN_1008,CUST_404,Enterprise,AI Services,4,350.00,1400.00,Credit Card,Asia-Pacific
+TXN_1009,CUST_407,SMB,Security Software,6,120.00,720.00,Wire Transfer,North America
+TXN_1010,CUST_402,SMB,AI Services,3,350.00,1050.00,Wire Transfer,Europe

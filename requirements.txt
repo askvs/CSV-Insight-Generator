@@ -8,3 +8,4 @@ streamlit
 plotly
 openpyxl
 kaleido
+flask
