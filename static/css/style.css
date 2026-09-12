@@ -1,12 +1,5 @@
-/* ==========================================================================
-   CSV & Multi-Dataset Insight Agent — Professional Matte Dark Design System
-   Aesthetic: Solid Matte Charcoal/Slate, High Legibility, Smooth Experience
-   No glassmorphism, no neon glows, no gradient/pulsing animations
-   ========================================================================== */
-
-/* ---------- CSS Custom Properties (Design Tokens) ---------- */
+/* Design tokens and theme custom properties */
 :root {
-  /* Matte Dark Surface Hierarchy */
   --bg-canvas: #0F1117;
   --bg-panel: #151821;
   --bg-surface: #1A1E29;
@@ -14,12 +7,10 @@
   --bg-surface-hover: #262B3B;
   --bg-input: #12141C;
 
-  /* Solid Borders */
   --border-subtle: #242938;
   --border-medium: #2F364A;
   --border-focus: #3B82F6;
 
-  /* Solid Clean Accents (No Gradients) */
   --accent-primary: #2563EB;
   --accent-primary-hover: #1D4ED8;
   --accent-primary-light: #60A5FA;
@@ -31,7 +22,6 @@
   --color-danger: #EF4444;
   --color-danger-bg: #450A0A;
 
-  /* Crisp Typography */
   --text-primary: #F3F4F6;
   --text-secondary: #9CA3AF;
   --text-muted: #6B7280;
@@ -40,16 +30,14 @@
   --font-main: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
   --font-mono: 'JetBrains Mono', 'Fira Code', monospace;
 
-  /* Subtle Clean Shadows (No Neon Glows) */
   --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.25);
   --shadow-md: 0 4px 10px rgba(0, 0, 0, 0.35);
 
-  /* Smooth Transitions */
   --transition-fast: 120ms ease;
   --transition-normal: 200ms ease;
 }
 
-/* ---------- Reset & Base Setup ---------- */
+/* Reset and base element styles */
 *, *::before, *::after {
   box-sizing: border-box;
   margin: 0;
@@ -69,7 +57,7 @@ html, body {
   overflow: hidden;
 }
 
-/* Crisp Clean Scrollbars */
+/* Custom scrollbar styles */
 ::-webkit-scrollbar {
   width: 6px;
   height: 6px;
@@ -85,7 +73,7 @@ html, body {
   background: #3B435A;
 }
 
-/* ---------- Top Navigation Header ---------- */
+/* Top navigation header */
 .app-header {
   height: 60px;
   background-color: var(--bg-panel);
@@ -203,7 +191,7 @@ html, body {
   gap: 0.5rem;
 }
 
-/* ---------- Common Buttons & Badges ---------- */
+/* Common button and badge styles */
 .btn {
   display: inline-flex;
   align-items: center;
@@ -297,7 +285,7 @@ html, body {
   height: 13px;
 }
 
-/* ---------- Workspace Layout (2 Panels) ---------- */
+/* Workspace two-column layout */
 .app-workspace {
   display: grid;
   grid-template-columns: 420px 1fr;
@@ -306,7 +294,7 @@ html, body {
   overflow: hidden;
 }
 
-/* ---------- Left Panel: Data Studio Sidebar ---------- */
+/* Left sidebar data studio panel */
 .sidebar-panel {
   background-color: var(--bg-panel);
   border-right: 1px solid var(--border-subtle);
@@ -809,7 +797,7 @@ html, body {
   padding: 0 4px;
 }
 
-/* ---------- Right Panel: AI Analytics Console ---------- */
+/* Right panel AI analytics console */
 .console-panel {
   display: flex;
   flex-direction: column;
@@ -1421,7 +1409,7 @@ html, body {
   color: #FFFFFF;
 }
 
-/* ---------- Sticky Bottom Chat Input Bar ---------- */
+/* Sticky bottom chat input bar */
 .input-dock {
   background-color: var(--bg-panel);
   border-top: 1px solid var(--border-subtle);
@@ -1607,9 +1595,7 @@ html, body {
 .toast.error { border-left: 3px solid var(--color-danger); }
 .toast.info { border-left: 3px solid var(--accent-primary-light); }
 
-/* ==========================================================================
-   Keyframes & Dynamic Animations
-   ========================================================================== */
+/* Keyframe animation definitions */
 @keyframes pulseDotIdle {
   0% { transform: scale(0.95); box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.7); }
   70% { transform: scale(1.05); box-shadow: 0 0 0 5px rgba(16, 185, 129, 0); }

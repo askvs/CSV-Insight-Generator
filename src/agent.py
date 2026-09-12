@@ -37,6 +37,7 @@ DEFAULT_MODELS = [
 ]
 
 
+# Extract tool call function name and arguments from raw model text
 def _extract_tool_call_from_text(text: str) -> tuple[str | None, dict]:
     """
     Extracts function name and argument dict from raw/failed LLM generation text
@@ -45,7 +46,7 @@ def _extract_tool_call_from_text(text: str) -> tuple[str | None, dict]:
     if not text:
         return None, {}
 
-    # Check for <function=NAME> and <parameter=PARAM>...</tool_call> or EOF
+    # Check for <function=NAME> and <parameter=PARAM> tags
     fn_match = re.search(r"<function=([a-zA-Z0-9_]+)>", text)
     if fn_match:
         fn_name = fn_match.group(1)
@@ -57,13 +58,13 @@ def _extract_tool_call_from_text(text: str) -> tuple[str | None, dict]:
             p_name = param_match.group(1)
             p_val = param_match.group(2).strip()
             return fn_name, {p_name: p_val}
-        # If no explicit parameter tag, treat remaining text as parameter
+        # Treat remainder as parameter if no explicit tag exists
         after_fn = text[fn_match.end() :].strip()
         after_fn = re.sub(r"</?tool_call>", "", after_fn).strip()
         key = "text" if fn_name == "final_answer" else "code"
         return fn_name, {key: after_fn}
 
-    # Check for JSON block within text
+    # Extract JSON block from text
     json_match = re.search(r'\{[\s\S]*"name"\s*:\s*"([a-zA-Z0-9_]+)"[\s\S]*\}', text)
     if json_match:
         try:
@@ -79,8 +80,8 @@ def _extract_tool_call_from_text(text: str) -> tuple[str | None, dict]:
     return None, {}
 
 
+# Extract Python code snippet from raw arguments string or JSON
 def _extract_code_from_raw_args(raw_args: str) -> str:
-    """Extracts python code from raw arguments even if JSON decoding fails or is truncated."""
     if not raw_args or not isinstance(raw_args, str):
         return ""
     raw = raw_args.strip()
@@ -95,12 +96,12 @@ def _extract_code_from_raw_args(raw_args: str) -> str:
     except Exception:
         pass
 
-    # Markdown fenced block
+    # Extract code inside markdown fenced block
     md_match = re.search(r"```(?:python)?\s*([\s\S]*?)\s*```", raw)
     if md_match:
         return md_match.group(1).strip()
 
-    # JSON-like "code": "..."
+    # Extract code from JSON-like key value
     code_match = re.search(r'"code"\s*:\s*"([\s\S]*)$', raw)
     if code_match:
         val = code_match.group(1)
@@ -119,12 +120,8 @@ def _extract_code_from_raw_args(raw_args: str) -> str:
     return raw
 
 
+# Strip tool tags and ensure proper Markdown line breaks
 def _clean_final_text(text: str | None) -> str:
-    """
-    Strips <think> tags or raw tool XML artifacts if present in LLM outputs,
-    and ensures proper Markdown formatting so tabular records and key metrics
-    never collapse into a single run-on paragraph.
-    """
     if not text:
         return ""
     cleaned = re.sub(r"<think>[\s\S]*?</think>", "", text).strip()
@@ -171,8 +168,8 @@ def _clean_final_text(text: str | None) -> str:
     return "".join(formatted_parts).strip()
 
 
+# Validate that response is a substantive report rather than code or chatter
 def _is_valid_executive_report(text: str | None) -> bool:
-    """Validates that a generated response is an actual answer/report rather than intermediate chatter or raw code."""
     if not text or not text.strip():
         return False
     t = text.strip()
@@ -199,12 +196,8 @@ def _is_valid_executive_report(text: str | None) -> bool:
     return True
 
 
+# Prune intermediate tool messages and retain only recent user and assistant turns
 def _prune_past_history(history: list) -> list:
-    """
-    Prunes verbose raw tool outputs and intermediate execution logs from completed
-    earlier turns to prevent TPM/rate-limit exhaustion, while preserving the system
-    dataset profile and high-level conversational context.
-    """
     if not history:
         return []
 
@@ -220,18 +213,19 @@ def _prune_past_history(history: list) -> list:
             if not content.startswith("Tool execution result:") and not content.startswith("Result:"):
                 pruned.append({"role": "user", "content": content})
         elif role == "assistant":
-            # Keep final responses, ignore intermediate code execution snippets
+            # Keep final responses and ignore intermediate code execution snippets
             content = msg.get("content")
             if content and not content.startswith("```python"):
                 pruned.append({"role": "assistant", "content": _clean_final_text(str(content))})
 
-    # Keep at most system prompt + last 3 Q&A pairs (6 messages)
+    # Retain at most system prompt and the last 3 Q&A turns
     if len(pruned) > 7:
         pruned = [pruned[0]] + pruned[-6:]
 
     return pruned
 
 
+# Safely serialize dataset profile dictionary to JSON string
 def _safe_serialize_profile(profile_dict: dict) -> str:
     """Safely serialize profile dictionary to JSON string without circular reference errors."""
     if not profile_dict:
@@ -257,8 +251,8 @@ def _safe_serialize_profile(profile_dict: dict) -> str:
         return json.dumps(safe_dict, separators=(",", ":"), default=str)
 
 
+# Autonomous data analyst agent powered by LLM tool calling
 class CSVInsightAgent:
-    """Agent that uses Groq LLM with tool-calling to analyze CSV data."""
 
     def __init__(self, model_name: str = "qwen/qwen3.8-27b"):
         api_key = os.getenv("GROQ_API_KEY")
@@ -275,6 +269,7 @@ class CSVInsightAgent:
         self.client = Groq(api_key=api_key)
         self.model_name = model_name
 
+    # Execute one complete reasoning and execution turn for user question
     def run_turn(
         self,
         user_question: str,

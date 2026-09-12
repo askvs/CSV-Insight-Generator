@@ -1,15 +1,8 @@
-/**
- * CSV & Multi-Dataset Insight Agent — Frontend Application Logic
- * Implements real-time SSE streaming, Plotly chart injection,
- * dataset profiling telemetry, and interactive data exploration.
- */
-
+// CSV Insight Agent frontend client logic
 (() => {
   'use strict';
 
-  // ────────────────────────────────────────────────────────────
-  // State & Configuration
-  // ────────────────────────────────────────────────────────────
+  // Application state and session configuration
   const urlParams = new URLSearchParams(window.location.search);
   let sessionId = urlParams.get('session_id') || localStorage.getItem('csv_insight_session_id');
   if (!sessionId) {
@@ -25,9 +18,9 @@
   const tablePageSize = 25;
   let tableSearchDebounceTimer = null;
   let isAgentAnalyzing = false;
-  let activeStreamReader = null;  // Track active SSE reader to abort on new upload
+  let activeStreamReader = null;
 
-  // Configure Marked.js options
+  // Configure Markdown rendering options
   if (typeof marked !== 'undefined') {
     marked.setOptions({
       gfm: true,
@@ -43,9 +36,7 @@
     });
   }
 
-  // ────────────────────────────────────────────────────────────
-  // DOM Elements
-  // ────────────────────────────────────────────────────────────
+  // DOM element references
   const dropZone = document.getElementById('dropZone');
   const fileInput = document.getElementById('fileInput');
   const uploadProgressBar = document.getElementById('uploadProgressBar');
@@ -83,9 +74,7 @@
   const toastContainer = document.getElementById('toastContainer');
   const agentConnectionStatus = document.getElementById('agentConnectionStatus');
 
-  // ────────────────────────────────────────────────────────────
-  // Agent Working State UI Controller
-  // ────────────────────────────────────────────────────────────
+  // Update UI components based on agent execution state
   function setAgentWorkingUI(isWorking) {
     isAgentAnalyzing = isWorking;
 
@@ -116,9 +105,7 @@
     }
   }
 
-  // ────────────────────────────────────────────────────────────
-  // Toast Notifications
-  // ────────────────────────────────────────────────────────────
+  // Display toast notification message
   function showToast(message, type = 'info') {
     const toast = document.createElement('div');
     toast.className = `toast ${type}`;
@@ -138,9 +125,7 @@
     }, 3500);
   }
 
-  // ────────────────────────────────────────────────────────────
-  // HTTP Fetch Wrapper with Session ID Header
-  // ────────────────────────────────────────────────────────────
+  // HTTP fetch wrapper with session identification header
   async function apiFetch(url, options = {}) {
     options.headers = options.headers || {};
     options.headers['X-Session-ID'] = sessionId;
@@ -148,9 +133,7 @@
     return res;
   }
 
-  // ────────────────────────────────────────────────────────────
-  // Initialize Session on Load
-  // ────────────────────────────────────────────────────────────
+  // Initialize user session and restore state on page load
   async function initSession() {
     setAgentWorkingUI(false);
     try {
@@ -192,9 +175,7 @@
     }
   }
 
-  // ────────────────────────────────────────────────────────────
-  // Dataset Ingestion (Drag & Drop, Compact Bar, File Picker)
-  // ────────────────────────────────────────────────────────────
+  // File drag-and-drop and upload handling
   ['dragenter', 'dragover'].forEach(eventName => {
     dropZone.addEventListener(eventName, (e) => {
       e.preventDefault();
@@ -238,14 +219,14 @@
 
   function renderUploadedFileList(tables) {
     if (!tables || tables.length === 0) {
-      // Show full drop zone, hide compact bar
+      // Display full dropzone when no tables are present
       if (dropZone) dropZone.style.display = '';
       if (uploadedCompactBar) uploadedCompactBar.style.display = 'none';
       if (uploadedFilesList) uploadedFilesList.innerHTML = '';
       return;
     }
 
-    // Hide large drop zone, show minimized uploaded file area
+    // Display compact uploaded files bar when tables exist
     if (dropZone) dropZone.style.display = 'none';
     if (uploadedCompactBar) uploadedCompactBar.style.display = 'flex';
     if (!uploadedFilesList) return;
@@ -318,7 +299,7 @@
         renderTableTabs(currentDatasets);
         loadTableData(currentDatasets[0].name, 1);
       } else {
-        // Zero datasets remaining: restore dropzone, hide tables & metrics
+        // Restore upload dropzone when all tables are removed
         renderUploadedFileList([]);
         metricsCard.style.display = 'none';
         tablePreviewCard.style.display = 'none';
@@ -335,13 +316,11 @@
       formData.append('files', files[i]);
     }
 
-    // If agent is currently analyzing, abort the active SSE stream first
+    // Cancel active stream if a new dataset is uploaded mid-analysis
     if (isAgentAnalyzing && activeStreamReader) {
       try {
         await activeStreamReader.cancel();
-      } catch (e) {
-        // Reader may already be closed
-      }
+      } catch (e) {}
       activeStreamReader = null;
       setAgentWorkingUI(false);
       showToast('Previous analysis aborted — loading new data...', 'info');
@@ -370,7 +349,7 @@
       loadTableData(data.tables[0].name, 1);
       enableExportButtons(true);
 
-      // Clear stale chat messages from previous dataset analysis
+      // Reset chat timeline for new dataset context
       chatTimeline.innerHTML = '';
       chatTimeline.appendChild(welcomeHero);
       welcomeHero.style.display = 'flex';
@@ -383,9 +362,7 @@
     }
   }
 
-  // ────────────────────────────────────────────────────────────
-  // Render Telemetry & Metric Cards
-  // ────────────────────────────────────────────────────────────
+  // Render dataset profile telemetry and summary cards
   function renderTelemetry(profile, tables, isMulti) {
     metricsCard.style.display = 'flex';
     tableCountTag.textContent = `${tables.length} Table${tables.length !== 1 ? 's' : ''}`;
@@ -445,7 +422,7 @@
 
     metricsGrid.innerHTML = html;
 
-    // Relational join keys
+    // Render identified relational join keys
     const commonKeys = profile.common_keys_for_joins || [];
     if (commonKeys.length > 0) {
       relationalKeysBox.style.display = 'flex';
@@ -458,9 +435,7 @@
     }
   }
 
-  // ────────────────────────────────────────────────────────────
-  // Render Table Tabs & Explorer
-  // ────────────────────────────────────────────────────────────
+  // Render dataset preview tabs and interactive explorer
   function renderTableTabs(tables) {
     tablePreviewCard.style.display = 'flex';
     tableTabList.innerHTML = '';
@@ -497,10 +472,10 @@
       const data = await res.json();
       currentTablePage = data.page;
 
-      // Update headers
+      // Populate table header columns
       dataGridHead.innerHTML = `<tr>${data.columns.map(col => `<th>${escapeHtml(col)}</th>`).join('')}</tr>`;
 
-      // Update rows
+      // Populate table body rows
       if (data.rows && data.rows.length > 0) {
         dataGridBody.innerHTML = data.rows.map(row => {
           return `<tr>${data.columns.map(col => `<td title="${escapeHtml(String(row[col] ?? ''))}">${escapeHtml(String(row[col] ?? ''))}</td>`).join('')}</tr>`;
@@ -509,7 +484,7 @@
         dataGridBody.innerHTML = `<tr><td colspan="${data.columns.length}" style="text-align:center; padding:1.5rem; color:var(--text-muted);">No matching records found.</td></tr>`;
       }
 
-      // Update pagination
+      // Update pagination controls and label
       const start = data.total_filtered > 0 ? (data.page - 1) * data.page_size + 1 : 0;
       const end = Math.min(data.page * data.page_size, data.total_filtered);
       paginationInfo.textContent = `Showing ${start}-${end} of ${data.total_filtered.toLocaleString()}`;
@@ -540,9 +515,7 @@
     loadTableData(activeTableName, currentTablePage + 1, tableSearchInput.value.trim());
   });
 
-  // ────────────────────────────────────────────────────────────
-  // Chat & Real-Time SSE Stream
-  // ────────────────────────────────────────────────────────────
+  // Chat interactions and real-time streaming execution
   // Auto-expand textarea
   questionInput.addEventListener('input', () => {
     questionInput.style.height = 'auto';
@@ -675,9 +648,7 @@
     }
   });
 
-  // ────────────────────────────────────────────────────────────
-  // Message UI Builders
-  // ────────────────────────────────────────────────────────────
+  // Message UI builders and chart renderers
   function appendUserMessage(text, timestamp) {
     const card = document.createElement('div');
     card.className = 'chat-msg user';
@@ -1075,25 +1046,20 @@
     btnExportNb.disabled = !enabled;
   }
 
-  // ────────────────────────────────────────────────────────────
-  // Deliverables Export Handlers
-  // ────────────────────────────────────────────────────────────
+  // PDF report and Jupyter notebook export handlers
   btnExportPdf.addEventListener('click', async () => {
     btnExportPdf.disabled = true;
     showToast('Generating formal 5-section executive PDF report...', 'info');
 
     try {
-      // 1. Verify export readiness with backend
+      // Verify export readiness with backend
       const checkRes = await apiFetch(`/api/export/check?type=pdf`);
       const checkData = await checkRes.json().catch(() => ({}));
       if (!checkRes.ok || !checkData.ok) {
         throw new Error(checkData.error || 'No completed intelligence analysis or dataset available to generate a PDF report.');
       }
 
-      // 2. Direct browser download via native HTTP attachment
-      // Navigating or triggering a download with Content-Disposition: attachment
-      // ensures Chrome reads the HTTP header directly, preserving the .pdf extension
-      // and Adobe/PDF file associations without premature blob revocation issues.
+      // Trigger browser download via attachment response
       const downloadUrl = `/api/export/pdf?session_id=${encodeURIComponent(sessionId)}&t=${Date.now()}`;
       const a = document.createElement('a');
       a.style.display = 'none';
@@ -1116,12 +1082,14 @@
     showToast('Preparing reproducible Jupyter Notebook (.ipynb)...', 'info');
 
     try {
+      // Verify notebook export readiness with backend
       const checkRes = await apiFetch(`/api/export/check?type=notebook`);
       const checkData = await checkRes.json().catch(() => ({}));
       if (!checkRes.ok || !checkData.ok) {
         throw new Error(checkData.error || 'No dataset loaded to export into a notebook.');
       }
 
+      // Trigger browser download for notebook file
       const downloadUrl = `/api/export/notebook?session_id=${encodeURIComponent(sessionId)}&t=${Date.now()}`;
       const a = document.createElement('a');
       a.style.display = 'none';
@@ -1139,9 +1107,7 @@
     }
   });
 
-  // ────────────────────────────────────────────────────────────
-  // Session Reset Handler
-  // ────────────────────────────────────────────────────────────
+  // Session reset and state clearing
   btnResetSession.addEventListener('click', async () => {
     if (!confirm('Are you sure you want to reset the session? All loaded datasets and chat history will be cleared.')) {
       return;
@@ -1150,7 +1116,7 @@
     try {
       await apiFetch('/api/reset', { method: 'POST' });
       
-      // Reset UI
+      // Reset local dataset and view state
       currentDatasets = [];
       renderUploadedFileList([]);
       metricsCard.style.display = 'none';

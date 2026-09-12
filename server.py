@@ -1,15 +1,3 @@
-"""
-CSV Insight Agent — Modern Flask Web Application Server
-
-Provides REST APIs and Server-Sent Events (SSE) for:
-  - Multi-file dataset ingestion (.csv, .xlsx, .xls, .json)
-  - Schema profiling & relational key detection
-  - Live agent reasoning & sandbox execution streaming
-  - Interactive Plotly chart serialization
-  - 5-section executive PDF report export
-  - Standards-compliant Jupyter Notebook (.ipynb) generation
-"""
-
 import base64
 import io
 import json
@@ -64,23 +52,20 @@ from src.sandbox import create_namespace
 app = Flask(__name__, template_folder="templates", static_folder="static")
 app.config["MAX_CONTENT_LENGTH"] = 250 * 1024 * 1024  # 250 MB max upload limit
 
-# ────────────────────────────────────────────────────────────
 # Session Store with Disk Persistence
-# ────────────────────────────────────────────────────────────
 # Maps session_id -> dict with session state
 SESSION_STORE: dict[str, dict[str, Any]] = {}
 SESSION_LOCK = threading.Lock()
 SESSIONS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".sessions")
 os.makedirs(SESSIONS_DIR, exist_ok=True)
 
-
+# Session utilities
 def _get_session_path(session_id: str) -> str:
     safe_name = "".join(c for c in session_id if c.isalnum() or c in ("-", "_"))
     return os.path.join(SESSIONS_DIR, f"{safe_name}.pkl")
 
 
 def save_session(session_id: str) -> None:
-    """Persists serializable session state to disk for crash and reload resilience."""
     if not session_id:
         return
     with SESSION_LOCK:
@@ -88,7 +73,7 @@ def save_session(session_id: str) -> None:
         if not sess:
             return
 
-        # Ensure raw_charts are safe for pickle by converting any live Matplotlib figures to PNG bytes
+        # Convert live Matplotlib figures to PNG bytes before pickling
         safe_raw_charts = []
         for rc in sess.get("raw_charts", []):
             if hasattr(rc, "savefig") and callable(rc.savefig):
@@ -137,14 +122,14 @@ def get_session(session_id: str) -> dict[str, Any]:
             SESSION_STORE[session_id]["last_accessed"] = time.time()
             return SESSION_STORE[session_id]
 
-        # Attempt to restore from disk cache
+        # Attempt to restore cached session from disk
         path = _get_session_path(session_id)
         if os.path.exists(path):
             try:
                 with open(path, "rb") as f:
                     loaded_data = pickle.load(f)
                 loaded_data["last_accessed"] = time.time()
-                # Reconstruct sandbox namespace and agent if missing
+                # Reconstruct sandbox namespace and agent instance if missing
                 if loaded_data.get("dfs") and not loaded_data.get("namespace"):
                     try:
                         loaded_data["namespace"] = create_namespace(loaded_data["dfs"])
@@ -156,7 +141,7 @@ def get_session(session_id: str) -> dict[str, Any]:
                     except Exception:
                         loaded_data["agent"] = None
 
-                # Ensure cancel_event exists (not serializable via pickle)
+                # Initialize threading cancel event for running agent tasks
                 if not loaded_data.get("cancel_event"):
                     loaded_data["cancel_event"] = threading.Event()
 
@@ -177,15 +162,15 @@ def get_session(session_id: str) -> dict[str, Any]:
             "chat_log": [],  # list of message dicts
             "raw_charts": [],  # list of native chart objects for exports
             "is_truncated": False,
-            "cancel_event": threading.Event(),  # signal running agent threads to abort on data change
+            "cancel_event": threading.Event(),
             "created_at": time.time(),
             "last_accessed": time.time(),
         }
         return SESSION_STORE[session_id]
 
 
+# Extract session identifier from request headers, cookies, or query parameters
 def get_session_id_from_request() -> str:
-    """Extract session ID from header, cookie, or query param, or create new."""
     s_id = (
         request.headers.get("X-Session-ID")
         or request.args.get("session_id")
@@ -204,17 +189,9 @@ class NamedBytesIO(io.BytesIO):
         self.name = filename
 
 
-# ────────────────────────────────────────────────────────────
-# Helper Functions
-# ────────────────────────────────────────────────────────────
+# Helper functions for data cleaning and serialization
 def _clean_plotly_dict(obj: Any) -> Any:
-    """
-    Recursively cleans a Plotly dictionary or nested data structure:
-    1. Decodes binary-encoded NumPy buffers ({'dtype': '...', 'bdata': '...'})
-       into standard JSON-serializable Python lists so Plotly.js can render them.
-    2. Converts NaNs and Infs to None so standard JSON.parse in JavaScript succeeds.
-    3. Converts NumPy scalar values and arrays to Python native types.
-    """
+    # Recursively convert binary buffers, NaNs, and NumPy types into JSON-safe data
     if isinstance(obj, dict):
         if "bdata" in obj and "dtype" in obj:
             try:
@@ -709,8 +686,7 @@ def chat_stream():
     sess["chat_log"].append(user_entry)
 
     event_queue: queue.Queue = queue.Queue()
-    # Snapshot the cancel event and data context at the time the question is asked,
-    # so that if a new upload occurs mid-analysis, this thread detects it and aborts.
+    # Snapshot cancellation event and execution context for thread safety
     cancel_event: threading.Event = sess.get("cancel_event") or threading.Event()
     snapshot_namespace = sess.get("namespace")
     snapshot_profile = sess.get("profile")
