@@ -2,17 +2,46 @@ import os
 import numpy as np
 import pandas as pd
 
-# 1. Multi-Format Dataset Loader (CSV, Excel, Parquet, JSON)
+# 1. Multi-Format Dataset Loader (CSV, Excel, JSON)
+
+
+def _load_json_data(path_or_buffer) -> pd.DataFrame:
+    """Load JSON files into a pandas DataFrame, normalizing nested structures when appropriate."""
+    import json
+
+    if hasattr(path_or_buffer, "seek"):
+        path_or_buffer.seek(0)
+
+    try:
+        data = json.load(path_or_buffer)
+        if isinstance(data, list):
+            return pd.json_normalize(data)
+        if isinstance(data, dict):
+            # If wrapped under a single key (e.g. {"data": [...]}, {"records": [...]}, {"items": [...]})
+            list_keys = [k for k, v in data.items() if isinstance(v, list) and v and isinstance(v[0], dict)]
+            if len(list_keys) == 1:
+                return pd.json_normalize(data[list_keys[0]])
+            return pd.json_normalize(data)
+    except Exception:
+        pass
+
+    if hasattr(path_or_buffer, "seek"):
+        path_or_buffer.seek(0)
+    try:
+        return pd.read_json(path_or_buffer)
+    except ValueError:
+        if hasattr(path_or_buffer, "seek"):
+            path_or_buffer.seek(0)
+        return pd.read_json(path_or_buffer, lines=True)
 
 
 def load_dataset(path_or_buffer, filename: str = "", large_threshold: int = 500_000):
     """
-    Load any supported data file (CSV, Excel, Parquet, JSON) into a pandas DataFrame.
+    Load any supported data file (CSV, Excel, JSON) into a pandas DataFrame.
     
     Supports:
       - .csv: Comma-separated values
       - .xlsx, .xls: Excel spreadsheets (handles active or single sheets)
-      - .parquet: Columnar parquet storage
       - .json: Structured records or tabular JSON
     
     Returns: (df, was_truncated)
@@ -30,16 +59,8 @@ def load_dataset(path_or_buffer, filename: str = "", large_threshold: int = 500_
                 df = excel_data[first_sheet]
             else:
                 df = excel_data
-        elif ext == ".parquet":
-            df = pd.read_parquet(path_or_buffer)
         elif ext == ".json":
-            try:
-                df = pd.read_json(path_or_buffer)
-            except ValueError:
-                # Try reading line-delimited JSON
-                if hasattr(path_or_buffer, "seek"):
-                    path_or_buffer.seek(0)
-                df = pd.read_json(path_or_buffer, lines=True)
+            df = _load_json_data(path_or_buffer)
         else:
             # Default to CSV parser
             df = pd.read_csv(path_or_buffer, low_memory=False)
@@ -108,6 +129,23 @@ def _downcast_numerics(df):
     return df
 
 
+def _safe_nunique(series: pd.Series) -> int:
+    """Safely calculate unique count even for unhashable types (dict, list, etc.)."""
+    try:
+        return int(series.nunique())
+    except TypeError:
+        return int(series.map(lambda x: str(x) if isinstance(x, (dict, list, set)) else x).nunique())
+
+
+def _safe_unique_list(series: pd.Series, limit: int = 30) -> list[str]:
+    """Safely extract unique string values even for unhashable types (dict, list, etc.)."""
+    try:
+        return [str(x) for x in series.dropna().unique()[:limit]]
+    except TypeError:
+        cleaned = series.map(lambda x: str(x) if isinstance(x, (dict, list, set)) else x)
+        return [str(x) for x in cleaned.dropna().unique()[:limit]]
+
+
 # 2. Build profile dictionary
 
 # When a dataset has more columns than this, we include detailed stats
@@ -164,9 +202,10 @@ def profile_dataframe(df, was_truncated=False):
     if brief_cols:
         profile["other_columns"] = []
         for c in brief_cols:
-            col_info = {"name": c, "dtype": str(df[c].dtype), "n_unique": int(df[c].nunique())}
-            if df[c].nunique() <= 30:
-                col_info["unique_values"] = [str(x) for x in df[c].dropna().unique()[:30]]
+            n_unq = _safe_nunique(df[c])
+            col_info = {"name": c, "dtype": str(df[c].dtype), "n_unique": n_unq}
+            if n_unq <= 30:
+                col_info["unique_values"] = _safe_unique_list(df[c], 30)
             profile["other_columns"].append(col_info)
 
     return profile
@@ -255,7 +294,7 @@ def _pick_interesting_columns(df, top_n):
     for col in df.columns:
         s = df[col]
         score = 0.0
-        n_unique = s.nunique()
+        n_unique = _safe_nunique(s)
 
         # Categorical / string / boolean dimensions with reasonable cardinality
         if not pd.api.types.is_numeric_dtype(s) and not pd.api.types.is_datetime64_any_dtype(s):
@@ -286,7 +325,7 @@ def _pick_interesting_columns(df, top_n):
 
 def _profile_column(series):
     """Return a stats dict for one column."""
-    n_uniq = int(series.nunique())
+    n_uniq = _safe_nunique(series)
     info = {
         "dtype": str(series.dtype),
         "null_count": int(series.isna().sum()),
@@ -324,7 +363,7 @@ def _profile_column(series):
         }
         # Provide full unique values list for filtering if reasonable size
         if n_uniq <= 30:
-            info["categories"] = [str(x) for x in series.dropna().unique()[:30]]
+            info["categories"] = _safe_unique_list(series, 30)
 
         # Average string length (useful indicator)
         if series.dtype == object:

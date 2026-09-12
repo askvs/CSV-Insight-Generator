@@ -81,26 +81,19 @@
   const btnExportNb = document.getElementById('btnExportNb');
   const btnResetSession = document.getElementById('btnResetSession');
   const toastContainer = document.getElementById('toastContainer');
-  const inputWrapper = document.querySelector('.input-wrapper');
   const agentConnectionStatus = document.getElementById('agentConnectionStatus');
-  const agentWorkingBanner = document.getElementById('agentWorkingBanner');
-  const workingBannerText = document.getElementById('workingBannerText');
 
   // ────────────────────────────────────────────────────────────
   // Agent Working State UI Controller
   // ────────────────────────────────────────────────────────────
-  function setAgentWorkingUI(isWorking, statusMessage = 'Agent executing Python analytics sandbox...') {
+  function setAgentWorkingUI(isWorking) {
     isAgentAnalyzing = isWorking;
-    btnSend.disabled = isWorking;
 
     if (isWorking) {
+      btnSend.disabled = false;
       btnSend.classList.add('is-loading');
-      btnSend.innerHTML = '<span class="btn-spinner"></span>';
-      if (inputWrapper) inputWrapper.classList.add('is-working');
-      if (agentWorkingBanner) {
-        agentWorkingBanner.style.display = 'flex';
-        if (workingBannerText) workingBannerText.textContent = statusMessage;
-      }
+      btnSend.setAttribute('title', 'Stop execution');
+      btnSend.innerHTML = '<span class="btn-stop-icon" title="Stop execution"></span>';
       if (agentConnectionStatus) {
         agentConnectionStatus.classList.add('is-busy');
         const pillText = agentConnectionStatus.querySelector('.pill-text');
@@ -108,14 +101,13 @@
       }
     } else {
       btnSend.classList.remove('is-loading');
+      btnSend.setAttribute('title', 'Send question (Enter)');
       btnSend.innerHTML = `
         <svg class="send-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
           <line x1="22" y1="2" x2="11" y2="13"/>
           <polygon points="22 2 15 22 11 13 2 9 22 2"/>
         </svg>
       `;
-      if (inputWrapper) inputWrapper.classList.remove('is-working');
-      if (agentWorkingBanner) agentWorkingBanner.style.display = 'none';
       if (agentConnectionStatus) {
         agentConnectionStatus.classList.remove('is-busy');
         const pillText = agentConnectionStatus.querySelector('.pill-text');
@@ -578,11 +570,28 @@
 
   chatForm.addEventListener('submit', async (e) => {
     e.preventDefault();
+
+    // If already analyzing, clicking the button triggers a stop
+    if (isAgentAnalyzing) {
+      try {
+        if (activeStreamReader) {
+          await activeStreamReader.cancel();
+          activeStreamReader = null;
+        }
+        await apiFetch('/api/chat/stop', { method: 'POST' });
+        showToast('Execution stopped.', 'info');
+      } catch (stopErr) {
+        console.warn('Error sending stop signal:', stopErr);
+      }
+      setAgentWorkingUI(false);
+      return;
+    }
+
     const question = questionInput.value.trim();
-    if (!question || isAgentAnalyzing) return;
+    if (!question) return;
 
     if (!currentDatasets || currentDatasets.length === 0) {
-      showToast('Please upload a dataset (.csv, .xlsx, .parquet, .json) before asking questions.', 'error');
+      showToast('Please upload a dataset (.csv, .xlsx, .json) before asking questions.', 'error');
       return;
     }
 
@@ -600,7 +609,7 @@
     chatTimeline.appendChild(agentMsgCard.container);
     scrollToBottom();
 
-    setAgentWorkingUI(true, '⚡ Initializing data intelligence runtime...');
+    setAgentWorkingUI(true);
 
     try {
       const response = await apiFetch('/api/chat', {
@@ -650,9 +659,11 @@
       }
 
     } catch (err) {
-      agentMsgCard.updateStatus(`❌ ${err.message}`, 'error');
-      // Only show error toast if it's not an intentional abort from re-upload
-      if (err.name !== 'AbortError' && !err.message?.includes('cancel')) {
+      const isAbort = err.name === 'AbortError' || err.message?.toLowerCase().includes('cancel') || err.message?.toLowerCase().includes('stop');
+      if (isAbort) {
+        agentMsgCard.updateStatus('⏹️ Analysis stopped by user.', 'info');
+      } else {
+        agentMsgCard.updateStatus(`❌ ${err.message}`, 'error');
         showToast(err.message, 'error');
       }
     } finally {

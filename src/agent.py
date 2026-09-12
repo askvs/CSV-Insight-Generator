@@ -283,6 +283,7 @@ class CSVInsightAgent:
         history: list | None = None,
         max_turns: int = 6,
         status_callback: object = None,
+        cancel_event: object = None,
     ) -> dict:
         """
         Run one agent turn for a user question.
@@ -323,6 +324,9 @@ class CSVInsightAgent:
 
         turn_count = 0
         while turn_count < max_turns:
+            if cancel_event and getattr(cancel_event, "is_set", lambda: False)():
+                break
+
             turn_count += 1
 
             response = None
@@ -376,8 +380,9 @@ class CSVInsightAgent:
 
                     # Check if error contains failed_generation that can be recovered
                     failed_gen = None
-                    if hasattr(e, "body") and isinstance(e.body, dict):
-                        failed_gen = e.body.get("error", {}).get("failed_generation")
+                    error_body = getattr(e, "body", None)
+                    if isinstance(error_body, dict):
+                        failed_gen = error_body.get("error", {}).get("failed_generation")
                     if not failed_gen:
                         match = re.search(
                             r"'failed_generation':\s*['\"]([\s\S]*?)['\"]\s*\}", err_str
@@ -760,8 +765,13 @@ class CSVInsightAgent:
             if tool_finished and final_text and _is_valid_executive_report(final_text):
                 break
 
+        # Keep tool output available for the final fallback even when synthesis is skipped.
+        collected_outputs = []
+
+        is_cancelled = bool(cancel_event and getattr(cancel_event, "is_set", lambda: False)())
+
         # If the turn loop completed without producing a valid executive report, perform an explicit synthesis call
-        if not _is_valid_executive_report(final_text):
+        if not is_cancelled and not _is_valid_executive_report(final_text):
             if status_callback and callable(status_callback):
                 try:
                     status_callback(
@@ -772,7 +782,6 @@ class CSVInsightAgent:
                     pass
 
             # Gather all tool outputs and executed code from history
-            collected_outputs = []
             for msg in history:
                 if msg.get("role") == "tool" and msg.get("content"):
                     raw_c = str(msg.get("content", ""))
@@ -842,6 +851,14 @@ class CSVInsightAgent:
                                 break
                 except Exception:
                     continue
+
+        if is_cancelled:
+            return {
+                "answer": "Analysis was stopped by user.",
+                "charts": charts,
+                "history": history,
+                "executed_code": executed_code,
+            }
 
         if not final_text or not final_text.strip():
             # Robust formatted fallback when API is unreachable

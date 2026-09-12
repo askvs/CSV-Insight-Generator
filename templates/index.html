@@ -107,7 +107,7 @@
 
         <!-- Full-sized drop zone (shown when no files uploaded) -->
         <div class="drop-zone" id="dropZone">
-          <input type="file" id="fileInput" multiple accept=".csv,.xlsx,.xls,.parquet,.json" class="file-input-hidden">
+          <input type="file" id="fileInput" multiple accept=".csv,.xlsx,.xls,.json" class="file-input-hidden">
           <div class="drop-zone-content">
             <div class="upload-icon-circle">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -120,7 +120,6 @@
             <div class="format-badges">
               <span class="fmt-badge">CSV</span>
               <span class="fmt-badge">EXCEL</span>
-              <span class="fmt-badge">PARQUET</span>
               <span class="fmt-badge">JSON</span>
             </div>
           </div>
@@ -283,23 +282,6 @@
 
       <!-- Sticky Chat Input Bar -->
       <div class="input-dock" id="inputDock">
-        <!-- Floating Agent Working Indicator Banner -->
-        <div class="agent-working-banner" id="agentWorkingBanner" style="display: none;">
-          <div class="working-pill">
-            <span class="working-radar">
-              <span class="radar-circle"></span>
-              <span class="radar-dot"></span>
-            </span>
-            <span class="working-text" id="workingBannerText">Agent executing Python analytics sandbox...</span>
-            <div class="working-bars">
-              <span class="bar bar-1"></span>
-              <span class="bar bar-2"></span>
-              <span class="bar bar-3"></span>
-              <span class="bar bar-4"></span>
-            </div>
-          </div>
-        </div>
-
         <form class="chat-input-form" id="chatForm">
           <div class="input-wrapper">
             <textarea

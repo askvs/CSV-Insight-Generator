@@ -2,7 +2,7 @@
 CSV Insight Agent — Modern Flask Web Application Server
 
 Provides REST APIs and Server-Sent Events (SSE) for:
-  - Multi-file dataset ingestion (.csv, .xlsx, .xls, .parquet, .json)
+  - Multi-file dataset ingestion (.csv, .xlsx, .xls, .json)
   - Schema profiling & relational key detection
   - Live agent reasoning & sandbox execution streaming
   - Interactive Plotly chart serialization
@@ -375,10 +375,15 @@ def _create_fallback_visualization(df: pd.DataFrame | None) -> Any:
     try:
         if px is not None:
             num_cols = df.select_dtypes(include=["number"]).columns.tolist()
-            cat_cols = [
-                c for c in df.select_dtypes(include=["object", "category", "string"]).columns
-                if not str(c).lower().endswith("id") and df[c].nunique() > 1
-            ]
+            cat_cols = []
+            for c in df.select_dtypes(include=["object", "category", "string"]).columns:
+                if str(c).lower().endswith("id"):
+                    continue
+                try:
+                    if df[c].nunique() > 1:
+                        cat_cols.append(c)
+                except TypeError:
+                    continue
 
             if cat_cols and num_cols:
                 cat = cat_cols[0]
@@ -799,11 +804,12 @@ def chat_stream():
                 namespace=snapshot_namespace,
                 history=snapshot_history,
                 status_callback=on_agent_status,
+                cancel_event=cancel_event,
             )
 
             # Check cancellation after agent finishes — discard stale results
             if cancel_event.is_set():
-                event_queue.put({"type": "error", "error": "Analysis cancelled — new dataset was uploaded."})
+                event_queue.put({"type": "error", "error": "Analysis stopped by user."})
                 event_queue.put(None)
                 return
 
@@ -824,7 +830,7 @@ def chat_stream():
 
             # Final cancellation check before writing results to session
             if cancel_event.is_set():
-                event_queue.put({"type": "error", "error": "Analysis cancelled — new dataset was uploaded."})
+                event_queue.put({"type": "error", "error": "Analysis stopped by user."})
                 event_queue.put(None)
                 return
 
@@ -899,6 +905,18 @@ def chat_stream():
             "Connection": "keep-alive",
         },
     )
+
+
+@app.route("/api/chat/stop", methods=["POST"])
+def chat_stop():
+    """Signals the active agent worker thread to stop execution."""
+    session_id = get_session_id_from_request()
+    sess = get_session(session_id)
+    with SESSION_LOCK:
+        cancel_event = sess.get("cancel_event")
+        if cancel_event and isinstance(cancel_event, threading.Event):
+            cancel_event.set()
+    return jsonify({"success": True, "message": "Execution stopped."})
 
 
 @app.route("/api/export/check", methods=["GET"])

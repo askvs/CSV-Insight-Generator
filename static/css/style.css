@@ -1430,81 +1430,6 @@ html, body {
   position: relative;
 }
 
-/* Floating Agent Working Indicator Banner */
-.agent-working-banner {
-  max-width: 920px;
-  margin: 0 auto 0.55rem auto;
-  display: flex;
-  justify-content: center;
-  animation: bannerSlideIn 0.28s cubic-bezier(0.16, 1, 0.3, 1) both;
-}
-
-.working-pill {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.65rem;
-  padding: 0.35rem 0.95rem;
-  background: linear-gradient(135deg, #13213B 0%, #1A2E50 100%);
-  border: 1px solid rgba(59, 130, 246, 0.4);
-  border-radius: 20px;
-  box-shadow: 0 4px 16px rgba(30, 58, 138, 0.25);
-  font-size: 0.74rem;
-  font-weight: 500;
-  color: #BFDBFE;
-}
-
-.working-radar {
-  position: relative;
-  width: 12px;
-  height: 12px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  flex-shrink: 0;
-}
-
-.working-radar .radar-circle {
-  position: absolute;
-  width: 12px;
-  height: 12px;
-  border-radius: 50%;
-  border: 1.5px solid #60A5FA;
-  opacity: 0.8;
-  animation: radarCircle 1.4s infinite ease-out;
-}
-
-.working-radar .radar-dot {
-  width: 5px;
-  height: 5px;
-  border-radius: 50%;
-  background-color: #60A5FA;
-}
-
-.working-text {
-  white-space: nowrap;
-}
-
-/* High-tech Equalizer Bars */
-.working-bars {
-  display: inline-flex;
-  align-items: flex-end;
-  gap: 2.5px;
-  height: 12px;
-  flex-shrink: 0;
-}
-
-.working-bars .bar {
-  width: 2.5px;
-  background-color: #60A5FA;
-  border-radius: 1px;
-  animation: equalizerWave 1s infinite ease-in-out;
-}
-
-.working-bars .bar-1 { height: 6px; animation-delay: 0.1s; }
-.working-bars .bar-2 { height: 11px; animation-delay: 0.3s; }
-.working-bars .bar-3 { height: 8px; animation-delay: 0.2s; }
-.working-bars .bar-4 { height: 12px; animation-delay: 0.4s; }
-
 .chat-input-form {
   max-width: 920px;
   margin: 0 auto;
@@ -1526,13 +1451,6 @@ html, body {
 
 .input-wrapper:focus-within {
   border-color: var(--border-focus);
-}
-
-/* Agent Active Working State on Input Bar */
-.input-wrapper.is-working {
-  border-color: rgba(59, 130, 246, 0.6);
-  box-shadow: 0 0 14px rgba(37, 99, 235, 0.2);
-  animation: inputGlowPulse 2.2s infinite ease-in-out;
 }
 
 .chat-textarea {
@@ -1572,19 +1490,29 @@ html, body {
 }
 
 .btn-send.is-loading {
-  background-color: #1E3A8A;
-  border-color: #3B82F6;
-  cursor: wait;
+  background-color: rgba(239, 68, 68, 0.2);
+  border-color: rgba(239, 68, 68, 0.6);
+  color: #EF4444;
+  cursor: pointer;
 }
 
-.btn-spinner {
+.btn-send.is-loading:hover {
+  background-color: #EF4444;
+  border-color: #DC2626;
+  color: #FFFFFF;
+}
+
+.btn-stop-icon {
+  width: 12px;
+  height: 12px;
+  background-color: currentColor;
+  border-radius: 2px;
   display: inline-block;
-  width: 15px;
-  height: 15px;
-  border: 2px solid rgba(255, 255, 255, 0.25);
-  border-top-color: #FFFFFF;
-  border-radius: 50%;
-  animation: spinLoader 0.75s linear infinite;
+  transition: transform var(--transition-fast);
+}
+
+.btn-send.is-loading:hover .btn-stop-icon {
+  transform: scale(0.92);
 }
 
 .send-icon {
@@ -1750,26 +1678,6 @@ html, body {
 @keyframes skeletonShimmer {
   0% { background-position: 200% 0; }
   100% { background-position: -200% 0; }
-}
-
-@keyframes bannerSlideIn {
-  from { opacity: 0; transform: translateY(-8px); }
-  to { opacity: 1; transform: translateY(0); }
-}
-
-@keyframes radarCircle {
-  0% { transform: scale(0.5); opacity: 1; }
-  100% { transform: scale(1.6); opacity: 0; }
-}
-
-@keyframes equalizerWave {
-  0%, 100% { height: 4px; }
-  50% { height: 12px; }
-}
-
-@keyframes inputGlowPulse {
-  0%, 100% { border-color: rgba(59, 130, 246, 0.45); box-shadow: 0 0 10px rgba(37, 99, 235, 0.15); }
-  50% { border-color: rgba(96, 165, 250, 0.8); box-shadow: 0 0 20px rgba(59, 130, 246, 0.3); }
 }
 
 @keyframes spinLoader {
