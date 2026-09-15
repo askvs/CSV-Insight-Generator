@@ -1,3 +1,4 @@
+# Vikash Sharma G6 GenAi - SURE ProEd
 <p align="center">
   <img src="https://img.shields.io/badge/Python-3.11+-3776AB?style=for-the-badge&logo=python&logoColor=white" alt="Python" />
   <img src="https://img.shields.io/badge/Flask-Server-000000?style=for-the-badge&logo=flask&logoColor=white" alt="Flask" />
@@ -5,7 +6,7 @@
   <img src="https://img.shields.io/badge/Plotly-Interactive_Charts-3F4F75?style=for-the-badge&logo=plotly&logoColor=white" alt="Plotly" />
   <img src="https://img.shields.io/badge/Render-Deployed-46E3B7?style=for-the-badge&logo=render&logoColor=white" alt="Render" />
 </p>
-# Vikash Sharma G6 GenAi - SURE ProEd
+
 # 📊 CSV & Multi-Dataset Insight Agent
 
 > **An autonomous AI data intelligence engine** that writes and executes real Python code in a secure sandbox, generates interactive Plotly visualizations, and synthesizes board-ready executive briefings — all from natural language questions about your data.
